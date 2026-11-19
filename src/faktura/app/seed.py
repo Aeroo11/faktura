@@ -23,6 +23,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="faktura-seed")
     parser.add_argument("--data", type=Path, default=Path("data/synth/v2"))
     parser.add_argument(
+        "--master",
+        choices=["files", "odoo"],
+        default=None,
+        help="master data source (default: $FAKTURA_MASTER or files)",
+    )
+    parser.add_argument(
         "--runs",
         type=Path,
         nargs="+",
@@ -40,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.create_schema:
         Base.metadata.create_all(engine)
     sessions = make_sessionmaker(engine)
-    ctx = load_context(args.data)
+    ctx = load_context(args.data, args.master)
     readings = load_readings(args.runs)
     labels = load_labels(args.data)
 

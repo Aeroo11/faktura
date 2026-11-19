@@ -18,6 +18,7 @@ Every change and its audit event are written in the same transaction.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,9 +27,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from faktura.app import audit
-from faktura.app.db import InvoiceRow, State
+from faktura.app.db import ErpOutbox, InvoiceRow, OutboxStatus, State
 from faktura.extract.schema import ExtractedInvoice, FieldName
-from faktura.master import MasterData
+from faktura.master import MasterData, MasterSource
 from faktura.matching import Ledger, Status, add_billing, decide
 from faktura.validate import resolve_vendor
 
@@ -62,7 +63,7 @@ class User:
 
 @dataclass
 class Context:
-    md: MasterData
+    master: MasterSource
     vat_bps: int
 
 
@@ -146,10 +147,11 @@ def _approved_numbers(session: Session, vendor_id: str | None, exclude: str) -> 
 
 def _evaluate(session: Session, ctx: Context, row: InvoiceRow) -> None:
     ext = _effective_reading(row)
-    vendor, _ = resolve_vendor(ext, ctx.md)
+    snapshot = ctx.master.snapshot()
+    vendor, _ = resolve_vendor(ext, snapshot)
     vid = vendor.vendor_id if vendor else None
     # Per-call copy: requests run in a thread pool and must not share this history.
-    md = copy.copy(ctx.md)
+    md = copy.copy(snapshot)
     md.approved_invoice_numbers = {vid: _approved_numbers(session, vid, row.id)} if vid else {}
     d = decide(row.id, ext, md, build_ledger(session, row.seq, md), ctx.vat_bps)
     row.decision = d.status.value
@@ -157,7 +159,11 @@ def _evaluate(session: Session, ctx: Context, row: InvoiceRow) -> None:
     row.vendor_id = d.vendor_id
     row.total = ext.total
     audit.append(
-        session, row.id, SYSTEM, "decided", {"decision": row.decision, "reasons": row.reasons}
+        session,
+        row.id,
+        SYSTEM,
+        "decided",
+        {"decision": row.decision, "reasons": row.reasons, "master": ctx.master.name},
     )
 
 
@@ -167,6 +173,26 @@ def _set_state(session: Session, row: InvoiceRow, state: State, actor: str) -> N
             session, row.id, actor, "state_changed", {"from": row.state, "to": state.value}
         )
         row.state = state.value
+        if state == State.APPROVED:
+            _enqueue_bill(session, row)
+
+
+def _enqueue_bill(session: Session, row: InvoiceRow) -> None:
+    """Queue the approved invoice for the ERP, in the same transaction as the approval."""
+    now = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+    session.add(
+        ErpOutbox(
+            invoice_id=row.id,
+            # Frozen: later edits to the row cannot change what gets posted.
+            payload={"reading": row.reading, "vendor_id": row.vendor_id, "pdf_path": row.pdf_path},
+            status=OutboxStatus.PENDING.value,
+            attempts=0,
+            next_attempt_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    audit.append(session, row.id, SYSTEM, "erp_queued", {})
 
 
 def _after_human_change(session: Session, ctx: Context, row: InvoiceRow, user: User) -> None:

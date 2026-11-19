@@ -1,5 +1,7 @@
-# Local Postgres for Faktura. Port 5433 so it does not clash with a local Postgres.
-# Credentials are for local development only.
+# Local services for Faktura. Credentials are for local development only.
+#
+#   docker compose up -d db                 # Faktura's own Postgres
+#   docker compose --profile erp up -d      # plus Odoo 20 as the ERP (see docs/erp.md)
 services:
   db:
     image: postgres:17.6-alpine
@@ -9,6 +11,7 @@ services:
       POSTGRES_PASSWORD: faktura-dev
       POSTGRES_DB: faktura
     ports:
+      # Port 5433 so it does not clash with a local Postgres.
       - "127.0.0.1:5433:5432"
     volumes:
       - faktura-pg:/var/lib/postgresql/data
@@ -19,5 +22,44 @@ services:
       retries: 10
     mem_limit: 512m
 
+  # Odoo keeps its data in its own Postgres: an ERP owns its database, and Faktura
+  # only talks to it through the ERP's API.
+  odoo-db:
+    image: postgres:17.6-alpine
+    container_name: faktura-odoo-db
+    profiles: [erp]
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo-dev
+      POSTGRES_DB: postgres
+    volumes:
+      - odoo-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m
+
+  odoo:
+    image: odoo:20.0
+    container_name: faktura-odoo
+    profiles: [erp]
+    depends_on:
+      odoo-db:
+        condition: service_healthy
+    environment:
+      HOST: odoo-db
+      USER: odoo
+      PASSWORD: odoo-dev
+    command: ["-d", "faktura_erp", "--db-filter=^faktura_erp$$"]
+    ports:
+      - "127.0.0.1:8069:8069"
+    volumes:
+      - odoo-data:/var/lib/odoo
+    mem_limit: 1536m
+
 volumes:
   faktura-pg:
+  odoo-pg:
+  odoo-data:

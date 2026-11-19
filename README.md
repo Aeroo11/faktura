@@ -8,8 +8,9 @@ and goods receipt (*three-way match*), and send only the problem invoices to a h
 > **Status: Phase 1 (MVP) complete.** Labelled synthetic data, extraction with targeted
 > re-reading, deterministic validators, a matching engine with an end-to-end eval, a CORD
 > benchmark, a review-queue API with maker-checker and a tamper-evident audit trail, and a
-> UI. Not yet built: SSO, ERP integration, and deployment (phases 2–3). This README only
-> describes what is in the code.
+> UI. Phase 2 in progress: Faktura now reads master data from an ERP (Odoo 20) and posts
+> approved invoices back to it as vendor bills. Not yet built: SSO and deployment. This
+> README only describes what is in the code.
 
 ## Results at a glance
 
@@ -185,6 +186,30 @@ the screenshots:
 uv run playwright install chromium
 uv run python scripts/e2e_demo.py --out docs/screenshots   # API and web must be running
 ```
+
+## ERP integration (Odoo 20)
+
+Faktura talks to Odoo through its JSON-2 API as a dedicated integration user.
+
+- **Reads master data.** Vendors, purchase orders, and goods receipts come live from Odoo.
+  The matching engine is unchanged: with Odoo seeded from the synthetic files, all 340
+  invoices get the same decision, state, and reasons as with the files. Only bank accounts
+  Odoo marks as trusted count, so an account added in the ERP is held until someone with
+  the right to verify it does so.
+- **Posts approved invoices as vendor bills.** Approval and an outbox entry are written in
+  one transaction; a worker posts the bill linked to the PO lines, with the PDF attached.
+  Every step can be re-run safely, so a crash or lost response never creates a second bill.
+  On the full dataset: 165 approved invoices became 165 posted bills, totals equal to the
+  rupiah (Rp 2,262,040,029 on both sides).
+
+```bash
+docker compose --profile erp up -d          # after the one-time setup in docs/erp.md
+FAKTURA_MASTER=odoo uv run uvicorn faktura.app.api:app --port 8077
+uv run faktura-erp-sync                     # posts approved invoices to Odoo
+```
+
+Setup, field mapping, how posting stays idempotent, and the SAP S/4HANA equivalents are in
+[`docs/erp.md`](docs/erp.md).
 
 ## External benchmark: CORD v2
 

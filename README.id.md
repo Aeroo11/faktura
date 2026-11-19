@@ -8,7 +8,9 @@ Otomasi Accounts Payable: membaca faktur, mencocokkannya dengan PO dan bukti ter
 > **Status: Fase 1 (MVP) selesai.** Sudah ada data sintetis berlabel, ekstraksi dengan
 > baca ulang terarah, validator deterministik, mesin pencocokan dengan eval end-to-end,
 > benchmark CORD, API antrean review dengan maker-checker dan audit trail tahan
-> manipulasi, serta UI. Belum ada: SSO, integrasi ERP, dan deployment (Fase 2–3).
+> manipulasi, serta UI. Fase 2 berjalan: data master dibaca langsung dari ERP (Odoo 20),
+> dan faktur yang disetujui diposting balik sebagai vendor bill. Belum ada: SSO dan
+> deployment.
 > README ini hanya menjelaskan yang sudah ada di kode.
 
 ## Dataset sintetis
@@ -164,6 +166,30 @@ menghasilkan screenshot-nya:
 uv run playwright install chromium
 uv run python scripts/e2e_demo.py --out docs/screenshots   # API dan web harus sudah jalan
 ```
+
+## Integrasi ERP (Odoo 20)
+
+Faktura berkomunikasi dengan Odoo lewat API JSON-2, memakai user integrasi khusus.
+
+- **Membaca data master.** Vendor, PO, dan bukti terima barang diambil langsung dari Odoo.
+  Mesin pencocokan tidak diubah. Setelah Odoo diisi dari file sintetis, ke-340 faktur
+  mendapat keputusan, status, dan alasan yang sama persis dengan mode file. Hanya rekening
+  yang ditandai *trusted* di Odoo yang dihitung, jadi rekening baru yang ditambahkan di ERP
+  tetap ditahan sampai diverifikasi oleh orang yang berwenang.
+- **Memposting faktur yang disetujui sebagai vendor bill.** Persetujuan dan entri outbox
+  ditulis dalam satu transaksi. Worker lalu memposting tagihan yang tertaut ke baris PO,
+  lengkap dengan PDF-nya. Setiap langkah aman diulang, jadi crash atau respons yang hilang
+  tidak pernah membuat tagihan ganda. Pada seluruh dataset: 165 faktur yang disetujui
+  menjadi 165 tagihan di Odoo, dengan total yang sama sampai ke rupiah (Rp2.262.040.029).
+
+```bash
+docker compose --profile erp up -d          # setelah setup awal di docs/erp.md
+FAKTURA_MASTER=odoo uv run uvicorn faktura.app.api:app --port 8077
+uv run faktura-erp-sync                     # memposting faktur yang disetujui ke Odoo
+```
+
+Cara setup, pemetaan field, cara posting dibuat idempoten, dan padanannya di SAP S/4HANA
+ada di [`docs/erp.md`](docs/erp.md).
 
 ## Benchmark eksternal: CORD v2
 

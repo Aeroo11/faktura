@@ -67,6 +67,34 @@ class AuditEvent(Base):
     hash: Mapped[str] = mapped_column(String(64), unique=True)
 
 
+class OutboxStatus(StrEnum):
+    PENDING = "pending"  # waiting for the sync worker (also after a retryable failure)
+    POSTED = "posted"  # the bill is posted in the ERP
+    NEEDS_ATTENTION = "needs_attention"  # the ERP refused or disagrees; a person must look
+
+
+class ErpOutbox(Base):
+    """Approved invoices to be posted to the ERP as vendor bills.
+
+    Written in the same transaction as the approval, so an approval is never lost and
+    never posted twice: the worker keys each bill by `invoice_id` in the ERP too.
+    """
+
+    __tablename__ = "erp_outbox"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    invoice_id: Mapped[str] = mapped_column(ForeignKey("invoices.id"), unique=True)
+    payload: Mapped[dict[str, Any]]  # frozen copy of what was approved
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[str] = mapped_column(String(40))  # ISO 8601 UTC
+    last_error: Mapped[str | None] = mapped_column(String(2000))
+    erp_id: Mapped[int | None]
+    erp_name: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+
 class AuditHead(Base):
     """Single row holding the chain head; locked while appending so the chain is linear."""
 

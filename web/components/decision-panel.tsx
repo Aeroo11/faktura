@@ -93,11 +93,43 @@ function ClosedNotice({ inv }: { inv: InvoiceDetail }) {
   );
 }
 
+/** Whether the approved invoice reached the ERP as a vendor bill. */
+function ErpNotice({ inv }: { inv: InvoiceDetail }) {
+  const erp = inv.erp;
+  if (!erp) return null;
+  if (erp.status === "posted") {
+    return (
+      <p className="text-sm text-text-muted">
+        Posted to Odoo as vendor bill <span className="font-mono font-medium text-text">{erp.bill}</span>.
+      </p>
+    );
+  }
+  if (erp.status === "needs_attention") {
+    return (
+      <p className="rounded-control bg-warning-soft px-3 py-2 text-sm text-warning">
+        Not posted to Odoo: {erp.error}
+      </p>
+    );
+  }
+  return (
+    <p className="text-sm text-text-muted">
+      Waiting to be posted to Odoo{erp.attempts > 0 ? ` (retrying, attempt ${erp.attempts + 1}: ${erp.error})` : ""}.
+    </p>
+  );
+}
+
 export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: DemoUser }) {
   const open = inv.state === "needs_action" || inv.state === "awaiting_approval";
   const isMaker = inv.makers.includes(user.name);
 
-  if (!open) return <ClosedNotice inv={inv} />;
+  if (!open) {
+    return (
+      <div className="space-y-2">
+        <ClosedNotice inv={inv} />
+        <ErpNotice inv={inv} />
+      </div>
+    );
+  }
   return (
     <div className="space-y-4">
       {inv.makers.length > 0 && (

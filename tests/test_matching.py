@@ -53,6 +53,19 @@ def test_misread_bank_account_is_held_not_paid(data_dir):
     assert any(r.code == "bank_master" for r in d.reasons)
 
 
+def test_vendor_without_trusted_bank_account_is_never_paid(data_dir):
+    # The Odoo source leaves the account empty when no account is trusted (docs/erp.md).
+    md = MasterData.load(data_dir)
+    lb = _first_clean(data_dir)
+    ext = perfect_reading(lb.invoice)
+    assert decide(lb.invoice_id, ext, md, Ledger(), VAT).status is Status.APPROVE
+    vid = next(v.vendor_id for v in md.vendors.values() if v.npwp == lb.invoice.vendor_npwp)
+    md.vendors[vid] = md.vendors[vid].model_copy(update={"bank_account": "", "bank_name": ""})
+    d = decide(lb.invoice_id, ext, md, Ledger(), VAT)
+    assert d.status is Status.HOLD
+    assert any(r.code == "bank_master" for r in d.reasons)
+
+
 def test_resubmission_with_misread_number_is_still_a_duplicate(data_dir):
     md = MasterData.load(data_dir)
     lb = _first_clean(data_dir)

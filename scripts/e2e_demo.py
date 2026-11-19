@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def switch_user(page: Page, name: str) -> None:
     page.wait_for_load_state("networkidle")
 
 
-def run_scenario(page: Page, out: Path, inv_id: str, true_npwp: str) -> None:
+def run_scenario(page: Page, out: Path, inv_id: str, true_npwp: str, erp: bool) -> None:
     goto(page, WEB)
     switch_user(page, "budi")
     expect(page.get_by_text("Needs action").first).to_be_visible()
@@ -89,11 +90,21 @@ def run_scenario(page: Page, out: Path, inv_id: str, true_npwp: str) -> None:
     expect(page.get_by_text("Field corrected").first).to_be_visible()
     page.screenshot(path=out / "4-approved-with-audit.png", full_page=True)
 
+    if erp:
+        # The ERP sync worker posts the approved invoice to Odoo as a vendor bill.
+        subprocess.run(["uv", "run", "faktura-erp-sync", "--once"], check=True)
+        goto(page, f"{WEB}/invoices/{inv_id}")
+        expect(page.get_by_text("Posted to Odoo as vendor bill").first).to_be_visible()
+        page.screenshot(path=out / "5-posted-to-odoo.png", full_page=True)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=Path("data/synth/v2"))
     parser.add_argument("--out", type=Path, default=Path("docs/screenshots"))
+    parser.add_argument(
+        "--erp", action="store_true", help="also post the bill to Odoo (needs docs/erp.md setup)"
+    )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -104,7 +115,7 @@ def main() -> int:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         try:
-            run_scenario(page, args.out, inv_id, true_npwp)
+            run_scenario(page, args.out, inv_id, true_npwp, args.erp)
         except Exception:
             page.screenshot(path=args.out / "failure.png", full_page=True)
             raise
@@ -117,7 +128,9 @@ def main() -> int:
     print("audit actions:", actions)
     print("chain:", api_get("/audit/verify"))
     assert detail["state"] == "approved" and detail["makers"] == ["budi"]
-    assert "field_corrected" in actions and actions[-2:] == ["approved", "state_changed"]
+    assert "field_corrected" in actions
+    tail = ["approved", "state_changed", "erp_queued"] + (["erp_bill_posted"] if args.erp else [])
+    assert actions[-len(tail) :] == tail
     return 0
 
 

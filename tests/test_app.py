@@ -65,7 +65,7 @@ def test_clean_invoice_is_auto_approved_with_audit_trail(env):
     body = client.get(f"/invoices/{inv_id}").json()
     assert body["state"] == "approved" and body["auto_approved"]
     actions = [e["action"] for e in body["audit"]]
-    assert actions == ["received", "read", "decided", "state_changed"]
+    assert actions == ["received", "read", "decided", "state_changed", "erp_queued"]
 
 
 def test_misread_total_corrected_then_needs_a_different_checker(env):
@@ -194,7 +194,7 @@ def test_audit_chain_detects_tampering(env):
         _ingest(env, lb)
     assert client.get("/audit/verify").json() == {
         "ok": True,
-        "events": 12,
+        "events": 15,
         "first_broken_seq": None,
     }
     with app.state.sessions() as s:  # an "insider" edits history directly in the DB

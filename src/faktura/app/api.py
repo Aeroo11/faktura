@@ -19,17 +19,35 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from faktura.app import audit, service
-from faktura.app.db import AuditEvent, InvoiceRow, make_engine, make_sessionmaker
+from faktura.app.db import AuditEvent, ErpOutbox, InvoiceRow, make_engine, make_sessionmaker
 from faktura.extract.pdf import render_first_page_png
-from faktura.master import MasterData
+from faktura.master import CachedMaster, MasterData, MasterSource, StaticMaster
 from faktura.synth.config import load_config
 
 DEFAULT_DATA_DIR = "data/synth/v2"
 
 
-def load_context(data_dir: Path) -> service.Context:
+def master_source(kind: str, data_dir: Path) -> MasterSource:
+    """`files`: the synthetic JSON (evals, tests). `odoo`: live from the ERP, see docs/erp.md."""
+    if kind == "files":
+        return StaticMaster(MasterData.load(data_dir))
+    if kind == "odoo":
+        from dotenv import load_dotenv
+
+        from faktura.erp.odoo import OdooClient
+        from faktura.erp.odoo_master import fetch_master
+
+        load_dotenv()  # ODOO_URL / ODOO_API_KEY; real environment variables win
+        client = OdooClient.from_env()
+        return CachedMaster(lambda: fetch_master(client), name="odoo")
+    raise ValueError(f"unknown master source {kind!r}; use files or odoo")
+
+
+def load_context(data_dir: Path, master: str | None = None) -> service.Context:
+    kind = master or os.environ.get("FAKTURA_MASTER", "files")
     return service.Context(
-        md=MasterData.load(data_dir), vat_bps=load_config(data_dir / "config.yaml").vat_bps
+        master=master_source(kind, data_dir),
+        vat_bps=load_config(data_dir / "config.yaml").vat_bps,
     )
 
 
@@ -171,7 +189,19 @@ def get_invoice(invoice_id: str, session: SessionDep) -> dict[str, Any]:
     events = session.execute(
         select(AuditEvent).where(AuditEvent.invoice_id == invoice_id).order_by(AuditEvent.seq)
     ).scalars()
+    outbox = session.execute(
+        select(ErpOutbox).where(ErpOutbox.invoice_id == invoice_id)
+    ).scalar_one_or_none()
+    erp = None
+    if outbox is not None:
+        erp = {
+            "status": outbox.status,
+            "bill": outbox.erp_name,
+            "attempts": outbox.attempts,
+            "error": outbox.last_error,
+        }
     return _view(row, detail=True) | {
+        "erp": erp,
         "audit": [
             {
                 "seq": e.seq,
@@ -182,7 +212,7 @@ def get_invoice(invoice_id: str, session: SessionDep) -> dict[str, Any]:
                 "hash": e.hash,
             }
             for e in events
-        ]
+        ],
     }
 
 

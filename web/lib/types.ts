@@ -63,7 +63,16 @@ export interface InvoiceDetail extends InvoiceSummary {
   model_reading: Reading;
   human_verified: string[];
   makers: string[];
+  /** Posting to the ERP; null until the invoice is approved. */
+  erp: ErpStatus | null;
   audit: AuditEntry[];
+}
+
+export interface ErpStatus {
+  status: "pending" | "posted" | "needs_attention";
+  bill: string | null;
+  attempts: number;
+  error: string | null;
 }
 
 export interface SummaryGroup {

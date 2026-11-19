@@ -23,11 +23,11 @@ dependencies = [
     "sqlalchemy>=2.1.9",
     "alembic>=1.20.1",
     "psycopg[binary]>=3.3.9",
+    "httpx>=0.28",
 ]
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "playwright>=1.65.2",
     "pytest>=8.3",
 ]
@@ -40,6 +40,7 @@ faktura-bench-cord = "faktura.bench.cord:main"
 faktura-eval-reread = "faktura.evals.reread_eval:main"
 faktura-eval-match = "faktura.evals.matching_eval:main"
 faktura-seed = "faktura.app.seed:main"
+faktura-erp-sync = "faktura.app.erp_sync:main"
 
 [build-system]
 requires = ["hatchling"]
