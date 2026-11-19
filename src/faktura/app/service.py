@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from faktura.app import audit
 from faktura.app.db import ErpOutbox, InvoiceRow, OutboxStatus, State
 from faktura.extract.schema import ExtractedInvoice, FieldName
+from faktura.learn.misread import MisreadModel
 from faktura.master import MasterData, MasterSource
 from faktura.matching import Ledger, Status, add_billing, decide
 from faktura.validate import resolve_vendor
@@ -65,6 +66,7 @@ class User:
 class Context:
     master: MasterSource
     vat_bps: int
+    misread: MisreadModel | None = None  # learned from corrections; see learn/misread.py
 
 
 class VendorVerification(BaseModel):
@@ -153,7 +155,15 @@ def _evaluate(session: Session, ctx: Context, row: InvoiceRow) -> None:
     # Per-call copy: requests run in a thread pool and must not share this history.
     md = copy.copy(snapshot)
     md.approved_invoice_numbers = {vid: _approved_numbers(session, vid, row.id)} if vid else {}
-    d = decide(row.id, ext, md, build_ledger(session, row.seq, md), ctx.vat_bps)
+    d = decide(
+        row.id,
+        ext,
+        md,
+        build_ledger(session, row.seq, md),
+        ctx.vat_bps,
+        misread=ctx.misread,
+        verified=set(row.human_verified),
+    )
     row.decision = d.status.value
     row.reasons = [r.model_dump(mode="json") for r in d.reasons]
     row.vendor_id = d.vendor_id
@@ -163,7 +173,12 @@ def _evaluate(session: Session, ctx: Context, row: InvoiceRow) -> None:
         row.id,
         SYSTEM,
         "decided",
-        {"decision": row.decision, "reasons": row.reasons, "master": ctx.master.name},
+        {
+            "decision": row.decision,
+            "reasons": row.reasons,
+            "master": ctx.master.name,
+            "misread_model": ctx.misread.version if ctx.misread else None,
+        },
     )
 
 
@@ -325,6 +340,13 @@ def submit(
     _check_version(row, expected_version)
     if len(justification.strip()) < 10:
         raise InvalidValue("justification must explain why (at least 10 characters)")
+    if any(r["code"] == "probable_misread" for r in row.reasons):
+        # Otherwise a payee change triaged as a likely misread could reach an approver
+        # without the vendor verification a fraud hold requires.
+        raise WorkflowError(
+            "check the flagged NPWP / bank account against the page first: correct it, or "
+            "confirm the reading (a confirmed difference is held for vendor verification)"
+        )
     verification = None
     if row.decision == Status.HOLD:
         if vendor_verification is None:

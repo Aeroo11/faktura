@@ -170,6 +170,25 @@ uv run playwright install chromium
 uv run python scripts/e2e_demo.py --out docs/screenshots   # Keycloak, API, dan web harus sudah jalan
 ```
 
+## Belajar dari koreksi
+
+Setiap koreksi dari staf AP adalah contoh berlabel tentang cara model salah membaca.
+Dulu NPWP dan nomor rekening yang salah baca ikut masuk antrean fraud (39 dari 241 faktur
+bersih). Dari koreksi terlihat bahwa salah bacanya sistematis: `6` terbaca `0`, `9`
+terbaca `0`, `6` terbaca `8`, atau satu digit terbaca dua kali. `faktura-learn` mengubah
+koreksi di audit trail menjadi tabel pola salah baca yang berversi dan bisa diaudit.
+Selisih dengan data master yang persis menyerupai pola itu ditriase sebagai
+`probable_misread`: staf mencocokkan digitnya dengan halaman lebih dulu, dan nilai yang
+memang tercetak berbeda tetap ditahan seperti sebelumnya. Model ini tidak pernah
+menyetujui apa pun, dan faktur tidak bisa di-submit sebelum pengecekan itu.
+
+Diuji ulang sesuai urutan kedatangan, dengan model hanya belajar dari koreksi
+sebelumnya: alarm fraud palsu turun dari 39 menjadi 20, presisi naik dari 0,57 ke 0,71,
+ke-25 perubahan NPWP/rekening asli tetap ditahan, dan 235 pemalsuan satu digit tertahan
+semua setelah pengecekan halaman. Memasukkan pola yang sama ke prompt re-read justru
+**menurunkan** akurasi (73,0% → 66,9% pada data held-out), jadi tidak diadopsi. Detail:
+[`docs/learning.md`](docs/learning.md).
+
 ## Integrasi ERP (Odoo 20)
 
 Faktura berkomunikasi dengan Odoo lewat API JSON-2, memakai user integrasi khusus.

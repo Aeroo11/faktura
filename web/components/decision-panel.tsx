@@ -121,6 +121,8 @@ function ErpNotice({ inv }: { inv: InvoiceDetail }) {
 export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: SessionUser }) {
   const open = inv.state === "needs_action" || inv.state === "awaiting_approval";
   const isMaker = inv.makers.includes(user.name);
+  // A likely misread of the NPWP or bank account must be checked before anyone submits it.
+  const mustCheck = inv.reasons.some((r) => r.code === "probable_misread");
 
   if (!open) {
     return (
@@ -138,7 +140,13 @@ export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: Session
           cannot approve it.
         </p>
       )}
-      {inv.state === "needs_action" && user.role === "ap_staff" && <Submit inv={inv} />}
+      {inv.state === "needs_action" && user.role === "ap_staff" && mustCheck && (
+        <p className="rounded-control bg-warning-soft px-3 py-2 text-sm text-warning">
+          Check the flagged field against the page first: correct it, or mark the reading as
+          correct. A confirmed difference from the vendor master is held for vendor verification.
+        </p>
+      )}
+      {inv.state === "needs_action" && user.role === "ap_staff" && !mustCheck && <Submit inv={inv} />}
       {inv.state === "needs_action" && user.role === "approver" && (
         <p className="text-sm text-text-muted">Waiting for AP staff to check this invoice.</p>
       )}

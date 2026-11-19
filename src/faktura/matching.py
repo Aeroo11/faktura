@@ -13,6 +13,11 @@ Policy notes:
   it might be a misread. Changed payment details are the most common AP fraud pattern
   (business email compromise); the safe process is to verify by calling a known vendor
   contact, never to pay automatically.
+- A learned misread model (learn/misread.py) may triage such a difference as
+  `probable_misread` (review_reading) when it looks exactly like one of the reader's known
+  misreads. This only changes who looks first: review_reading is never auto-approved, and
+  once a person has checked the field against the page (confirmed or corrected it), the
+  master comparison applies unchanged, so a value really printed differently is held.
 - Unknown issue codes fail safe to review_reading.
 - Every decision carries its reasons, so it can be explained to an auditor.
 """
@@ -27,7 +32,9 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from faktura.extract.schema import ExtractedInvoice
+from faktura.learn.misread import MisreadModel
 from faktura.master import MasterData
+from faktura.schemas import Vendor
 from faktura.validate import Issue, match_po_line, resolve_vendor, validate
 
 
@@ -203,8 +210,13 @@ def decide(
     vat_bps: int,
     issues: list[Issue] | None = None,
     trust_model_flags: bool = True,
+    misread: MisreadModel | None = None,
+    verified: frozenset[str] | set[str] = frozenset(),
 ) -> Decision:
-    """Decide one invoice and update the ledger. Invoices must be fed in arrival order."""
+    """Decide one invoice and update the ledger. Invoices must be fed in arrival order.
+
+    `verified`: fields a person has checked against the page; never triaged as misreads.
+    """
     if issues is None:
         issues = validate(ext, md, vat_bps)
     vendor, _ = resolve_vendor(ext, md)
@@ -219,6 +231,8 @@ def decide(
         )
         for i in issues
     ]
+    if misread is not None and vendor is not None:
+        reasons = [_triage_misread(r, ext, vendor, misread, verified) for r in reasons]
     if trust_model_flags and ext.uncertain_fields:
         names = sorted(f.value for f in ext.uncertain_fields)
         reasons.append(
@@ -242,3 +256,41 @@ def decide(
 
     status = max((r.status for r in reasons), key=SEVERITY.__getitem__, default=Status.APPROVE)
     return Decision(invoice_id=invoice_id, status=status, reasons=reasons, vendor_id=vendor_id)
+
+
+_MASTER_VALUE = {  # issue code -> (reading field, vendor-master attribute)
+    "npwp_master": ("vendor_npwp", "npwp"),
+    "bank_master": ("bank_account", "bank_account"),
+}
+_LABEL = {"vendor_npwp": "NPWP", "bank_account": "Bank account"}
+
+
+def _triage_misread(
+    r: Reason,
+    ext: ExtractedInvoice,
+    vendor: Vendor,
+    misread: MisreadModel,
+    verified: frozenset[str] | set[str],
+) -> Reason:
+    """Turn a master mismatch that looks like a known misread into a check of the page.
+
+    The message names neither the master value nor the edits: a person asked to "fix" a
+    digit towards a value they were shown could make a fraudulent invoice look clean.
+    """
+    if r.code not in _MASTER_VALUE:
+        return r
+    field_name, master_attr = _MASTER_VALUE[r.code]
+    if field_name in verified:
+        return r
+    if misread.explain(getattr(ext, field_name), getattr(vendor, master_attr)) is None:
+        return r
+    return Reason(
+        code="probable_misread",
+        status=Status.REVIEW,
+        fields=[field_name],
+        message=(
+            f"{_LABEL[field_name]} differs from the vendor master in a way this reader often "
+            "misreads; check every digit against the page. If the page shows it as read, "
+            "confirm it and the invoice is held for vendor verification."
+        ),
+    )

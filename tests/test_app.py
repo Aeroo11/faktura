@@ -10,6 +10,7 @@ from faktura.app.auth import DevHeaderAuth
 from faktura.app.db import Base, make_engine, make_sessionmaker
 from faktura.evals.extraction import load_labels
 from faktura.evals.matching_eval import perfect_reading
+from faktura.learn.misread import Correction, MisreadModel
 from faktura.synth.cli import write_dataset
 from faktura.synth.config import SynthConfig
 from faktura.synth.generate import generate
@@ -224,3 +225,39 @@ def test_image_list_and_summary(env):
     assert len(client.get("/invoices").json()["items"]) == 4
     groups = client.get("/summary").json()["groups"]
     assert sum(g["count"] for g in groups) == 4
+
+
+def _one_digit_misread(value: str) -> str:
+    i = next(i for i, ch in enumerate(value) if ch == "6")
+    return value[:i] + "0" + value[i + 1 :]
+
+
+def test_learned_misread_is_checked_on_the_page_then_held_or_cleared(env):
+    """Triage from the misread model: confirm-as-printed brings the hold back; a fix clears it."""
+    client, labels, _ = env
+    app.state.ctx.misread = MisreadModel.fit([Correction("bank_account", "102", "162")] * 3)
+    clean = [lb for lb in _clean(labels) if "6" in lb.invoice.bank_account]
+    first, second = clean[0], clean[1]
+
+    a = _ingest(env, first, bank_account=_one_digit_misread(first.invoice.bank_account))
+    body = client.get(f"/invoices/{a}").json()
+    assert body["decision"] == "review_reading"
+    assert "probable_misread" in body["reason_codes"]
+    decided = [e for e in body["audit"] if e["action"] == "decided"][-1]
+    assert decided["payload"]["misread_model"] == app.state.ctx.misread.version
+    # It cannot skip the page check and reach an approver without vendor verification.
+    r = client.post(
+        f"/invoices/{a}/submit", headers=STAFF, json={"justification": "looks fine to me, pay it"}
+    )
+    assert r.status_code == 409 and "against the page" in r.json()["detail"]
+    # The clerk reads the page and finds the digits really are as read: held.
+    r = client.post(f"/invoices/{a}/confirmations", headers=STAFF, json={"field": "bank_account"})
+    assert r.json()["decision"] == "fraud_hold"
+
+    b = _ingest(env, second, bank_account=_one_digit_misread(second.invoice.bank_account))
+    r = client.post(
+        f"/invoices/{b}/corrections",
+        headers=STAFF,
+        json={"field": "bank_account", "value": second.invoice.bank_account},
+    )
+    assert r.json()["state"] == "awaiting_approval"  # a person touched it: maker-checker

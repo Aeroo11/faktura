@@ -38,13 +38,16 @@ def pick_misread_npwp_hold(session: Session, data_dir: Path) -> tuple[str, str]:
     """A clean invoice held only because its NPWP was misread; returns (id, true NPWP)."""
     labels = {lb.invoice_id: lb for lb in load_labels(data_dir)}
     rows = session.execute(
-        select(InvoiceRow)
-        .where(InvoiceRow.state == "needs_action", InvoiceRow.decision == "fraud_hold")
-        .order_by(InvoiceRow.seq)
+        select(InvoiceRow).where(InvoiceRow.state == "needs_action").order_by(InvoiceRow.seq)
     ).scalars()
     for row in rows:
         lb = labels[row.id]
-        if not lb.anomalies and sorted({r["code"] for r in row.reasons}) == ["npwp_master"]:
+        codes = [(r["code"], tuple(r["fields"])) for r in row.reasons]
+        # Held for the NPWP, or triaged as a probable NPWP misread (with a misread model).
+        if not lb.anomalies and codes in (
+            [("npwp_master", ("vendor_npwp",))],
+            [("probable_misread", ("vendor_npwp",))],
+        ):
             return row.id, lb.invoice.vendor_npwp
     raise SystemExit("no suitable invoice in the queue; reseed the database")
 
@@ -98,7 +101,10 @@ def run_scenario(page: Page, out: Path, inv_id: str, true_npwp: str, erp: bool) 
     page.screenshot(path=out / "1-queue.png")
 
     goto(page, f"{WEB}/invoices/{inv_id}")
-    expect(page.get_by_text("NPWP differs from vendor master").first).to_be_visible()
+    flag = page.get_by_text("NPWP differs from vendor master").or_(
+        page.get_by_text("Looks like a misread")
+    )
+    expect(flag.first).to_be_visible()
     page.screenshot(path=out / "2-held-for-npwp.png", full_page=True)
 
     # Budi checks the page and corrects the misread NPWP.

@@ -57,6 +57,7 @@ export const REASON_LABEL: Record<string, string> = {
   npwp_master: "NPWP differs from vendor master",
   bank_master: "Bank account differs from vendor master",
   bank_name_master: "Bank differs from vendor master",
+  probable_misread: "Looks like a misread: check digits on the page",
   duplicate_number: "Duplicate: same invoice number",
   duplicate_tax_invoice: "Duplicate: same tax invoice number",
   duplicate_po_total: "Duplicate: same PO and total",

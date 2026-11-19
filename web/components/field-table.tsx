@@ -18,7 +18,7 @@ const FLAG_STYLE: Record<Decision, string> = {
 const SEVERITY: Decision[] = ["approve", "review_reading", "business_exception", "fraud_hold"];
 
 function show(def: FieldDef, v: unknown): string {
-  if (v == null || v === "") return "â€”";
+  if (v == null || v === "") return "—";
   if (def.kind === "money") return rupiah(v as number);
   if (def.kind === "lines") return `${(v as InvoiceLine[]).length} line(s)`;
   return String(v);
@@ -107,7 +107,7 @@ function FieldRow({
           )}
           {reasons.map((r) => (
             <div key={r.code} className="mt-1 text-xs text-text-muted">
-              âš‘ {reasonLabel(r.code)}
+              ⚑ {reasonLabel(r.code)}
             </div>
           ))}
         </div>

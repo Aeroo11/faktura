@@ -42,6 +42,8 @@ faktura-eval-reread = "faktura.evals.reread_eval:main"
 faktura-eval-match = "faktura.evals.matching_eval:main"
 faktura-seed = "faktura.app.seed:main"
 faktura-erp-sync = "faktura.app.erp_sync:main"
+faktura-eval-learn = "faktura.evals.learn_eval:main"
+faktura-learn = "faktura.learn.cli:main"
 
 [build-system]
 requires = ["hatchling"]

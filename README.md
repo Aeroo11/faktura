@@ -21,6 +21,7 @@ and goods receipt (*three-way match*), and send only the problem invoices to a h
 | Clean invoices paid with a misread amount or account | **0** |
 | Invoices read fully correctly, after targeted re-read | 53.7% → **73.0%** (100% on clean PDFs) |
 | Field errors caught by deterministic validators vs. model self-flags | **75.5%** vs. 17% |
+| False fraud alarms, after learning from corrections | 39 → **20** (precision 0.57 → 0.71), 25/25 payee changes still held |
 | CORD v2 (public benchmark), zero-shot | TED accuracy **91.9** vs. 91.3 for fine-tuned Donut |
 | Extraction cost | ~USD 1 per 1,000 invoices |
 
@@ -191,6 +192,23 @@ runs the scenario above, and produces the screenshots:
 uv run playwright install chromium
 uv run python scripts/e2e_demo.py --out docs/screenshots   # Keycloak, API and web must be running
 ```
+
+## Learning from corrections
+
+Every correction AP staff make is a labelled example of how the reader fails. Misread
+NPWPs and bank accounts used to land in the fraud queue (39 of 241 clean invoices), and
+the corrections show the misreads are systematic: `6` read as `0`, `9` as `0`, `6` as
+`8`, a digit read twice. `faktura-learn` turns the corrections in the audit trail into a
+versioned, auditable table of these misreads. A master mismatch that looks exactly like
+one is triaged as `probable_misread`: the clerk checks the digits on the page first, and
+a value really printed differently is held as before. The model never approves anything,
+and the invoice cannot be submitted before that check.
+
+Replayed in arrival order, learning only from earlier corrections: false fraud alarms
+39 → 20, precision 0.57 → 0.71, all 25 real NPWP/bank-account changes still held, and
+235 forged one-digit changes all held after the page check. Feeding the same misread
+patterns into the re-read prompt made reading **worse** (73.0% → 66.9% on held-out
+data), so that was not adopted. Details: [`docs/learning.md`](docs/learning.md).
 
 ## ERP integration (Odoo 20)
 

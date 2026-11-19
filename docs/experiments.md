@@ -3,6 +3,58 @@
 Newest first. Every number comes from a run directory under `runs/` (git-ignored); the
 command to reproduce it is listed with each entry.
 
+## 2026-11-19 · Learning from corrections
+
+`faktura-eval-learn --runs runs/luna-v2-reread-tiles-final runs/luna-v2-reread-pilot-tiles runs/luna-v2`
+(no API calls). Full write-up: `docs/learning.md`.
+
+A misread model (counts of aligned edit types from identifier corrections) triages an
+NPWP/bank mismatch that looks like a known misread as `probable_misread` (review_reading)
+instead of `fraud_hold`. Replay in arrival order with a simulated clerk, fitted only on
+earlier corrections (88 identifier corrections, 72 within 3 edits):
+
+| | No learning | Learned |
+|---|---|---|
+| fraud_hold | 90 | 70 |
+| clean in fraud_hold | 39 | 20 |
+| precision | 0.567 | 0.714 |
+| changed NPWP/bank still held | 25/25 | 25/25 |
+| auto-approved | 165 | 165 |
+
+Learning curve (fit on first-half corrections, measure second half; baseline 16 false
+alarms): 0 → 16, 10 → 13, 25 → 9, 42 → 7, with 12/12 payee changes held throughout.
+Adversarial, one digit changed to the most common misread: 235/235 triaged (the fraud
+label is bypassed), 235/235 held after the page check, 0 paid.
+
+**Loophole found and closed during the live check.** A triaged invoice showed the normal
+"Submit for approval" form, which needs only a justification, while a fraud hold also
+needs a vendor verification. A clerk could have skipped the page check and sent a
+forged payee to an approver. Submit is now refused while `probable_misread` is present
+(regression test in `tests/test_app.py`).
+
+**Re-read prompt with learned hints: negative, not adopted.**
+`faktura-eval-reread --base runs/luna-v2 --tiles --exclude runs/luna-v2-reread-pilot-tiles [--misread-model runs/learn-dev/misread-model.json]`.
+Hints were fitted on the 40 dev invoices only (`faktura-eval-learn --fit-on`). The first
+attempt ran both configurations at the same time and hit rate limits (29 and 10 failed
+calls), so the failed calls were retried one run after the other before comparing.
+
+| Held-out (n=296 paired) | Fully correct | Fixed / broken |
+|---|---|---|
+| Original tiles run (2026-11-18) | 73.0% | 140 / 7 |
+| Same config, rerun | 72.0% | 138 / 10 |
+| + learned hints | 66.9% | 60 / 1 |
+
+With hints the second read changed 70 of 369 requested fields (237 without). The likely
+cause is more nulls, which make the first reading stick; this is not verified because the
+raw second-read output is not stored. Run-to-run noise on this set is about 1 point.
+
+Side finding (rerun): on inv-00323 (phone photo, `vat_miscalc`) the re-read returned
+the VAT that should have been charged instead of the miscalculated VAT printed on the
+invoice, so the VAT field flag was lost. The invoice was still stopped, because DPP +
+VAT no longer matched the total, and no anomalous invoice was approved with these
+readings. Arithmetic cross-checks are a second line of defence against the model
+"correcting" a document.
+
 ## 2026-11-18 · Three-way match: end-to-end decisions
 
 `faktura-eval-match --oracle` and

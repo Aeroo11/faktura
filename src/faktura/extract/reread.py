@@ -101,7 +101,9 @@ def reread(
     issues: list[Issue],
     reasoning: str | None = "medium",
     tiles: bool = False,
+    misread_hint: str | None = None,
 ) -> tuple[ExtractedInvoice, set[FieldName], Usage, float]:
+    """`misread_hint`: generic advice from learned misreads (MisreadModel.hint), no values."""
     fields = fields_to_reread(issues)
     if not fields:
         return ext, set(), Usage(), 0.0
@@ -110,6 +112,8 @@ def reread(
     hints = reread_hints(issues)
     if hints:
         text += " Checks that failed on the first reading: " + "; ".join(hints) + "."
+    if misread_hint:
+        text += " " + misread_hint
     images = [(image_png, "image/png")]
     if tiles:
         text += (

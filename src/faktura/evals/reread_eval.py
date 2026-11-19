@@ -27,6 +27,7 @@ from faktura.extract.pdf import render_first_page_png
 from faktura.extract.preprocess import preprocess
 from faktura.extract.reread import reread
 from faktura.extract.schema import ExtractedInvoice, FieldName
+from faktura.learn.misread import MisreadModel
 from faktura.master import MasterData
 from faktura.synth.config import load_config
 from faktura.validate import suspect_fields, validate
@@ -44,6 +45,7 @@ def process_one(
     out_raw: Path,
     tiles: bool = False,
     use_preprocess: bool = False,
+    misread_hint: str | None = None,
 ) -> dict:
     cache = out_raw / f"{lb.invoice_id}.json"
     if cache.exists():
@@ -56,7 +58,9 @@ def process_one(
         if use_preprocess:
             png, _ = preprocess(png)
         try:
-            merged, fields, usage, latency = reread(client, png, ext, issues, tiles=tiles)
+            merged, fields, usage, latency = reread(
+                client, png, ext, issues, tiles=tiles, misread_hint=misread_hint
+            )
         except Exception as e:  # keep the first reading; record why
             rec["reread_error"] = f"{type(e).__name__}: {e}"
             return rec  # not cached, so it is retried next time
@@ -116,9 +120,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--exclude", type=Path, default=None, help="run dir whose invoices are left out (dev pilot)"
     )
+    parser.add_argument(
+        "--misread-model", type=Path, default=None, help="add learned misread hints (no values)"
+    )
     args = parser.parse_args(argv)
 
     load_dotenv()
+    hint = MisreadModel.load(args.misread_model).hint() if args.misread_model else None
+    print("misread hint:", hint)
     client = AzureResponsesClient.from_env()
     vat_bps = load_config(args.data / "config.yaml").vat_bps
     labels = {lb.invoice_id: lb for lb in load_labels(args.data)}
@@ -155,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                 out_raw,
                 args.tiles,
                 args.preprocess,
+                hint,
             )
             for b in bases
         ]
@@ -166,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     rep = build_report(results, client.model)
     stats = change_stats(records, labels, MasterData.load(args.data), history, vat_bps)
     rep["reread"] = stats | {
+        "misread_hint": hint,
         "invoices_reread": sum(bool(r["reread_fields"]) for r in records),
         "reread_errors": sum("reread_error" in r for r in records),
     }

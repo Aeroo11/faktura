@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from faktura.app import audit, auth, service
 from faktura.app.db import AuditEvent, ErpOutbox, InvoiceRow, make_engine, make_sessionmaker
 from faktura.extract.pdf import render_first_page_png
+from faktura.learn.misread import MisreadModel
 from faktura.master import CachedMaster, MasterData, MasterSource, StaticMaster
 from faktura.synth.config import load_config
 
@@ -45,9 +46,11 @@ def master_source(kind: str, data_dir: Path) -> MasterSource:
 
 def load_context(data_dir: Path, master: str | None = None) -> service.Context:
     kind = master or os.environ.get("FAKTURA_MASTER", "files")
+    misread_path = os.environ.get("FAKTURA_MISREAD_MODEL")  # from faktura-learn; optional
     return service.Context(
         master=master_source(kind, data_dir),
         vat_bps=load_config(data_dir / "config.yaml").vat_bps,
+        misread=MisreadModel.load(Path(misread_path)) if misread_path else None,
     )
 
 
