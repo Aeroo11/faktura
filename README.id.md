@@ -9,8 +9,8 @@ Otomasi Accounts Payable: membaca faktur, mencocokkannya dengan PO dan bukti ter
 > baca ulang terarah, validator deterministik, mesin pencocokan dengan eval end-to-end,
 > benchmark CORD, API antrean review dengan maker-checker dan audit trail tahan
 > manipulasi, serta UI. Fase 2 berjalan: data master dibaca langsung dari ERP (Odoo 20),
-> dan faktur yang disetujui diposting balik sebagai vendor bill. Belum ada: SSO dan
-> deployment.
+> dan faktur yang disetujui diposting balik sebagai vendor bill, serta login lewat
+> Keycloak. Belum ada: deployment.
 > README ini hanya menjelaskan yang sudah ada di kode.
 
 ## Dataset sintetis
@@ -128,11 +128,14 @@ docker compose up -d db
 export DATABASE_URL=postgresql+psycopg://faktura:faktura-dev@127.0.0.1:5433/faktura
 uv run alembic upgrade head
 uv run faktura-seed --runs runs/luna-v2-reread-tiles-final runs/luna-v2-reread-pilot-tiles runs/luna-v2
+docker compose --profile sso up -d keycloak
 uv run uvicorn faktura.app.api:app --port 8077   # Swagger UI di /docs
 ```
 
-Login masih placeholder: identitas diambil dari header `X-User` dan `X-Role`. Ini hanya
-untuk development. SSO (Keycloak) dijadwalkan di Fase 2.
+**Login (Keycloak, OIDC).** Setiap panggilan API membawa access token Keycloak. API
+memeriksa tanda tangan, issuer, audience, dan masa berlakunya, lalu mengambil username dan
+role dari token itu. Role realm: `ap_staff` dan `approver`; akun yang memegang keduanya
+ditolak. Detail, tabel ancaman, dan akun demo ada di [`docs/auth.md`](docs/auth.md).
 
 ### UI antrean review
 
@@ -151,20 +154,20 @@ lain (Sari). Seluruh langkah tercatat di audit trail:
 ![Disetujui, dengan audit trail](docs/screenshots/4-approved-with-audit.png)
 
 ```bash
-cd web && npm install && npm run build
-FAKTURA_API_URL=http://127.0.0.1:8077 npm start      # http://127.0.0.1:3077
+cd web && npm install && cp .env.example .env.local   # isi FAKTURA_SESSION_SECRET
+npm run build && npm start                            # http://127.0.0.1:3077
 npm run verify                                        # typecheck + lint + unit test
 ```
 
 Next.js 16 memanggil FastAPI dari server, jadi browser tidak pernah berbicara langsung
-ke API. Design token-nya sama dengan TokenWatch.
+ke API dan tidak pernah memegang token. Design token-nya sama dengan TokenWatch.
 
 **Test end-to-end di browser sungguhan** (Playwright) menjalankan skenario di atas dan
-menghasilkan screenshot-nya:
+menghasilkan screenshot-nya. Setiap user login lewat form Keycloak:
 
 ```bash
 uv run playwright install chromium
-uv run python scripts/e2e_demo.py --out docs/screenshots   # API dan web harus sudah jalan
+uv run python scripts/e2e_demo.py --out docs/screenshots   # Keycloak, API, dan web harus sudah jalan
 ```
 
 ## Integrasi ERP (Odoo 20)

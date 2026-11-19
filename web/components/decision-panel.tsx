@@ -4,7 +4,7 @@ import { approveInvoice, rejectInvoice, submitInvoice } from "@/app/actions";
 import { Button, FormMessage, Hidden, inputClass, useAction } from "@/components/action-form";
 import { formatTimestamp } from "@/lib/format";
 import type { InvoiceDetail } from "@/lib/types";
-import type { DemoUser } from "@/lib/users";
+import type { SessionUser } from "@/lib/session";
 
 function Reject({ inv }: { inv: InvoiceDetail }) {
   const [state, act, pending] = useAction(rejectInvoice);
@@ -118,7 +118,7 @@ function ErpNotice({ inv }: { inv: InvoiceDetail }) {
   );
 }
 
-export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: DemoUser }) {
+export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: SessionUser }) {
   const open = inv.state === "needs_action" || inv.state === "awaiting_approval";
   const isMaker = inv.makers.includes(user.name);
 
@@ -140,7 +140,7 @@ export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: DemoUse
       )}
       {inv.state === "needs_action" && user.role === "ap_staff" && <Submit inv={inv} />}
       {inv.state === "needs_action" && user.role === "approver" && (
-        <p className="text-sm text-text-muted">Waiting for AP staff to check this invoice. Switch to Budi or Dewi to act.</p>
+        <p className="text-sm text-text-muted">Waiting for AP staff to check this invoice.</p>
       )}
       {inv.state === "awaiting_approval" && user.role === "approver" && !isMaker && <Approve inv={inv} />}
       {inv.state === "awaiting_approval" && user.role === "approver" && isMaker && (
@@ -149,7 +149,7 @@ export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: DemoUse
         </p>
       )}
       {inv.state === "awaiting_approval" && user.role === "ap_staff" && (
-        <p className="text-sm text-text-muted">Waiting for an approver. Switch to Sari or Rina to approve.</p>
+        <p className="text-sm text-text-muted">Waiting for an approver.</p>
       )}
       <Reject inv={inv} />
     </div>

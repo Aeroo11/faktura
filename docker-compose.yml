@@ -2,6 +2,7 @@
 #
 #   docker compose up -d db                 # Faktura's own Postgres
 #   docker compose --profile erp up -d      # plus Odoo 20 as the ERP (see docs/erp.md)
+#   docker compose --profile sso up -d      # plus Keycloak for sign-in (see docs/auth.md)
 services:
   db:
     image: postgres:17.6-alpine
@@ -59,7 +60,27 @@ services:
       - odoo-data:/var/lib/odoo
     mem_limit: 1536m
 
+  # Single sign-on for the review queue. Dev mode: HTTP, embedded database, the realm
+  # (roles, demo users, the faktura-web client) imported from keycloak/ on first start.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    container_name: faktura-keycloak
+    profiles: [sso]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin-dev
+      KC_HOSTNAME: http://127.0.0.1:8180
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "127.0.0.1:8180:8080"
+    volumes:
+      - ./keycloak/faktura-realm.json:/opt/keycloak/data/import/faktura-realm.json:ro
+      - keycloak-data:/opt/keycloak/data
+    mem_limit: 1g
+
 volumes:
+  keycloak-data:
   faktura-pg:
   odoo-pg:
   odoo-data:

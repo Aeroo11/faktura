@@ -2,8 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
 import { FileCheck2 } from "lucide-react";
-import { UserSwitcher } from "@/components/user-switcher";
-import { currentUser } from "@/lib/api";
+import { UserMenu } from "@/components/user-menu";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"], display: "swap" });
@@ -16,8 +15,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { themeColor: "#f4f6fa", colorScheme: "light" };
 
-export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const user = await currentUser();
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
       <body>
@@ -28,13 +26,13 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
               Faktura
               <span className="hidden text-sm font-normal text-text-muted sm:inline">AP review queue</span>
             </Link>
-            <UserSwitcher current={user.name} />
+            <UserMenu />
           </div>
         </header>
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">{children}</main>
         <footer className="mx-auto max-w-7xl px-4 pb-8 text-xs text-text-subtle sm:px-6">
-          Synthetic demo data — every document is marked “CONTOH SINTETIS”. Identity is a dev-only
-          header until SSO is added.
+          Synthetic demo data — every document is marked “CONTOH SINTETIS”. Sign-in through Keycloak (local
+          development realm).
         </footer>
       </body>
     </html>

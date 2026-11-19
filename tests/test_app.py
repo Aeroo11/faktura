@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from faktura.app import service
 from faktura.app.api import app, load_context
+from faktura.app.auth import DevHeaderAuth
 from faktura.app.db import Base, make_engine, make_sessionmaker
 from faktura.evals.extraction import load_labels
 from faktura.evals.matching_eval import perfect_reading
@@ -34,8 +35,9 @@ def env(data_dir):
     Base.metadata.create_all(engine)
     app.state.sessions = make_sessionmaker(engine)
     app.state.ctx = load_context(data_dir)
+    app.state.auth = DevHeaderAuth()
     labels = load_labels(data_dir)
-    with TestClient(app) as client:
+    with TestClient(app, headers=STAFF) as client:
         yield client, labels, data_dir
     engine.dispose()
 
@@ -106,7 +108,7 @@ def test_roles_are_enforced(env):
     r = client.post(f"/invoices/{inv_id}/approve", headers=STAFF, json={})
     assert r.status_code == 403
     r = client.get("/invoices", headers={"X-User": "x", "X-Role": "admin"})
-    assert r.status_code == 200  # reads need no role in the dev setup
+    assert r.status_code == 403  # reads need a Faktura role too
 
 
 def test_fraud_hold_needs_vendor_verification(env):

@@ -1,10 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { cookies } from "next/headers";
-import { ApiError, currentUser, postAction } from "@/lib/api";
+import { unstable_rethrow } from "next/navigation";
+import { ApiError, postAction } from "@/lib/api";
 import { type FieldKind, parseFieldValue } from "@/lib/fields";
-import { USER_COOKIE, findUser } from "@/lib/users";
 
 // A "use server" module may only export async functions, so the initial form state
 // lives in components/action-form.tsx. Type-only exports are erased and allowed.
@@ -25,10 +24,10 @@ function version(form: FormData): number | undefined {
 
 /** Run one API action and turn domain errors into a message for the form. */
 async function run(id: string, action: string, body: unknown, done: string): Promise<ActionState> {
-  const user = await currentUser();
   try {
-    await postAction(id, action, body, user);
+    await postAction(id, action, body);
   } catch (e) {
+    unstable_rethrow(e); // a redirect to /login when the session has ended
     if (e instanceof ApiError) {
       const prefix =
         e.status === 403 ? "Not allowed" : e.status === 409 ? "Conflict" : e.status === 422 ? "Invalid" : "Error";
@@ -39,12 +38,6 @@ async function run(id: string, action: string, body: unknown, done: string): Pro
   revalidatePath(`/invoices/${id}`);
   revalidatePath("/");
   return { ok: true, message: done };
-}
-
-export async function switchUser(form: FormData): Promise<void> {
-  const user = findUser(str(form, "user"));
-  (await cookies()).set(USER_COOKIE, user.name, { path: "/", sameSite: "lax", httpOnly: true });
-  revalidatePath("/", "layout");
 }
 
 export async function correctField(_: ActionState, form: FormData): Promise<ActionState> {

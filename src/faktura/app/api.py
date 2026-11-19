@@ -1,8 +1,7 @@
 """HTTP API for the review queue. Translates requests; all rules live in service.py.
 
-Authentication is a placeholder: the caller states who they are in X-User / X-Role
-headers. That is acceptable only for local development and demos; Keycloak (OIDC) is
-planned for phase 2. Never expose this API with header auth.
+Every route needs an identity: a Keycloak access token by default, or X-User / X-Role
+headers when FAKTURA_AUTH=dev (tests and local scripts only). See auth.py.
 """
 
 from __future__ import annotations
@@ -14,11 +13,12 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from faktura.app import audit, service
+from faktura.app import audit, auth, service
 from faktura.app.db import AuditEvent, ErpOutbox, InvoiceRow, make_engine, make_sessionmaker
 from faktura.extract.pdf import render_first_page_png
 from faktura.master import CachedMaster, MasterData, MasterSource, StaticMaster
@@ -53,14 +53,16 @@ def load_context(data_dir: Path, master: str | None = None) -> service.Context:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from dotenv import load_dotenv
+
+    load_dotenv()  # real environment variables win
+    if not hasattr(app.state, "auth"):
+        app.state.auth = auth.auth_from_env()
     if not hasattr(app.state, "sessions"):
         app.state.sessions = make_sessionmaker(make_engine())
     if not hasattr(app.state, "ctx"):
         app.state.ctx = load_context(Path(os.environ.get("FAKTURA_DATA_DIR", DEFAULT_DATA_DIR)))
     yield
-
-
-app = FastAPI(title="Faktura review queue", lifespan=lifespan)
 
 
 def get_session(request: Request) -> Iterator[Session]:
@@ -72,16 +74,33 @@ def get_ctx(request: Request) -> service.Context:
     return request.app.state.ctx
 
 
-def get_user(x_user: Annotated[str, Header()], x_role: Annotated[str, Header()]) -> service.User:
-    """DEV ONLY: trusts the caller's headers. Replaced by OIDC in phase 2."""
-    if x_role not in service.ROLES:
-        raise HTTPException(403, f"unknown role {x_role!r}")
-    return service.User(name=x_user, role=x_role)
+bearer_scheme = HTTPBearer(auto_error=False, description="Keycloak access token")
+
+
+def get_user(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    x_user: Annotated[str | None, Header()] = None,
+    x_role: Annotated[str | None, Header()] = None,
+) -> service.User:
+    authn: auth.Authenticator = request.app.state.auth
+    token = credentials.credentials if credentials else None
+    try:
+        return authn.user(token, x_user, x_role)
+    except auth.Unauthenticated as e:
+        raise HTTPException(401, str(e), headers={"WWW-Authenticate": "Bearer"}) from e
+    except auth.NotPermitted as e:
+        raise HTTPException(403, str(e)) from e
+    except auth.IdpUnavailable as e:
+        raise HTTPException(503, str(e)) from e
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
 CtxDep = Annotated[service.Context, Depends(get_ctx)]
 UserDep = Annotated[service.User, Depends(get_user)]
+
+# Reads need an identity too: invoices carry bank accounts and amounts.
+app = FastAPI(title="Faktura review queue", lifespan=lifespan, dependencies=[Depends(get_user)])
 
 
 def _run(session: Session, fn, *args, **kwargs) -> InvoiceRow:

@@ -9,7 +9,8 @@ and goods receipt (*three-way match*), and send only the problem invoices to a h
 > re-reading, deterministic validators, a matching engine with an end-to-end eval, a CORD
 > benchmark, a review-queue API with maker-checker and a tamper-evident audit trail, and a
 > UI. Phase 2 in progress: Faktura now reads master data from an ERP (Odoo 20) and posts
-> approved invoices back to it as vendor bills. Not yet built: SSO and deployment. This
+> approved invoices back to it as vendor bills, and users sign in through Keycloak. Not yet
+> built: deployment. This
 > README only describes what is in the code.
 
 ## Results at a glance
@@ -149,11 +150,14 @@ docker compose up -d db
 export DATABASE_URL=postgresql+psycopg://faktura:faktura-dev@127.0.0.1:5433/faktura
 uv run alembic upgrade head
 uv run faktura-seed --runs runs/luna-v2-reread-tiles-final runs/luna-v2-reread-pilot-tiles runs/luna-v2
+docker compose --profile sso up -d keycloak
 uv run uvicorn faktura.app.api:app --port 8077   # Swagger UI at /docs
 ```
 
-Login is a placeholder: identity comes from the `X-User` and `X-Role` headers, for
-development only. SSO (Keycloak) is planned for phase 2.
+**Sign-in (Keycloak, OIDC).** Every API call carries a Keycloak access token; the API
+checks its signature, issuer, audience, and expiry, and takes the username and role from
+it. Realm roles `ap_staff` and `approver`; an account holding both is refused. Details,
+the threat table, and demo accounts: [`docs/auth.md`](docs/auth.md).
 
 ### Review UI
 
@@ -172,19 +176,20 @@ again. Because a human touched the invoice, payment still needs a different appr
 ![Approved, with audit trail](docs/screenshots/4-approved-with-audit.png)
 
 ```bash
-cd web && npm install && npm run build
-FAKTURA_API_URL=http://127.0.0.1:8077 npm start      # http://127.0.0.1:3077
+cd web && npm install && cp .env.example .env.local   # set FAKTURA_SESSION_SECRET
+npm run build && npm start                            # http://127.0.0.1:3077
 npm run verify                                        # typecheck + lint + unit tests
 ```
 
-Next.js 16 calls FastAPI from the server, so the browser never talks to the API directly.
+Next.js 16 calls FastAPI from the server, so the browser never talks to the API directly
+and never holds a token.
 
-**End-to-end test in a real browser** (Playwright) runs the scenario above and produces
-the screenshots:
+**End-to-end test in a real browser** (Playwright) signs in through the Keycloak form,
+runs the scenario above, and produces the screenshots:
 
 ```bash
 uv run playwright install chromium
-uv run python scripts/e2e_demo.py --out docs/screenshots   # API and web must be running
+uv run python scripts/e2e_demo.py --out docs/screenshots   # Keycloak, API and web must be running
 ```
 
 ## ERP integration (Odoo 20)

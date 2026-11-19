@@ -1,0 +1,112 @@
+{
+  "realm": "faktura",
+  "displayName": "Faktura",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "loginWithEmailAllowed": false,
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "passwordPolicy": "length(12) and notUsername",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "roles": {
+    "realm": [
+      { "name": "ap_staff", "description": "Accounts-payable staff: check, correct and submit invoices" },
+      { "name": "approver", "description": "Approves payments; never the same person who changed the invoice" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "faktura-web",
+      "name": "Faktura review queue",
+      "description": "Next.js backend-for-frontend. Confidential client: the browser never sees a token.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "faktura-web-dev-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": ["http://127.0.0.1:3077/auth/callback"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://127.0.0.1:3077/login"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience faktura-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "faktura-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "budi",
+      "firstName": "Budi",
+      "lastName": "Santoso",
+      "email": "budi@faktura.example",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "budi-faktura-dev", "temporary": false }],
+      "realmRoles": ["default-roles-faktura", "ap_staff"]
+    },
+    {
+      "username": "dewi",
+      "firstName": "Dewi",
+      "lastName": "Lestari",
+      "email": "dewi@faktura.example",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "dewi-faktura-dev", "temporary": false }],
+      "realmRoles": ["default-roles-faktura", "ap_staff"]
+    },
+    {
+      "username": "sari",
+      "firstName": "Sari",
+      "lastName": "Wijaya",
+      "email": "sari@faktura.example",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "sari-faktura-dev", "temporary": false }],
+      "realmRoles": ["default-roles-faktura", "approver"]
+    },
+    {
+      "username": "rina",
+      "firstName": "Rina",
+      "lastName": "Hartono",
+      "email": "rina@faktura.example",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "rina-faktura-dev", "temporary": false }],
+      "realmRoles": ["default-roles-faktura", "approver"]
+    },
+    {
+      "username": "joko",
+      "firstName": "Joko",
+      "lastName": "Prasetyo",
+      "email": "joko@faktura.example",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "joko-faktura-dev", "temporary": false }],
+      "realmRoles": ["default-roles-faktura", "ap_staff", "approver"]
+    }
+  ]
+}
