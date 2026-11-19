@@ -196,3 +196,5 @@ di [`docs/assumptions.md`](docs/assumptions.md).
 ## Lisensi
 
 [MIT](LICENSE).
+
+src/faktura/bench/donut_metric.py is adapted from [Donut](https://github.com/clovaai/donut) (Copyright (c) 2022-present NAVER Corp., MIT); its notice is kept in that file.
