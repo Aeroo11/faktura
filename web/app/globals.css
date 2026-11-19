@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/* Design tokens shared with TokenWatch, so both portfolio apps read as one family.
+   `:root` holds literal values; `@theme inline` only aliases them into utilities. */
+:root {
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-2: #f3f6fb;
+  --surface-3: #e7edf6;
+  --border: #dce3ee;
+  --border-strong: #b8c6da;
+
+  --text: #17243c;
+  --text-muted: #4f607a;
+  --text-subtle: #5b6d88;
+
+  --accent: #3053c4;
+  --accent-soft: #eef2ff;
+  --success: #13714d;
+  --success-soft: #e8f5ef;
+  --warning: #965503;
+  --warning-soft: #fdf3e3;
+  --danger: #ad303c;
+  --danger-soft: #fcecee;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-subtle: var(--text-subtle);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  --radius-panel: 0.875rem;
+  --radius-control: 0.5rem;
+  --shadow-panel: 0 1px 2px 0 rgb(23 36 60 / 0.045);
+  --shadow-raised: 0 12px 32px -12px rgb(23 36 60 / 0.16);
+
+  --text-eyebrow: 0.6875rem;
+  --text-eyebrow--line-height: 1;
+  --text-eyebrow--letter-spacing: 0.06em;
+
+  --font-sans: var(--font-geist-sans, ui-sans-serif), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono, ui-monospace), ui-monospace, monospace;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

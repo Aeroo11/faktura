@@ -1,0 +1,19 @@
+# Synthetic AP dataset v1. Changing anything here changes the dataset; the exact
+# config is copied next to the output for reproducibility.
+seed: 42
+n_vendors: 12
+n_purchase_orders: 200
+start_date: 2025-01-01
+end_date: 2025-12-31
+vat_bps: 1100          # effective 11%; see docs/assumptions.md
+max_lines_per_po: 6
+partial_delivery_rate: 0.2
+anomaly_rate: 0.3
+anomaly_weights:
+  price_mismatch: 1.0
+  qty_over_received: 1.0
+  duplicate_invoice: 1.0
+  npwp_mismatch: 0.7
+  vat_miscalc: 0.7
+  bank_account_changed: 0.6
+scan_effect_rate: 0.5

@@ -1,0 +1,60 @@
+[project]
+name = "faktura"
+version = "0.1.0"
+description = "Accounts-payable automation: extract invoices, three-way match against PO and goods receipt, route exceptions to humans."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Efan Ramdhani" }]
+dependencies = [
+    "pydantic>=2.10",
+    "pyyaml>=6.0",
+    "pillow>=11.0",
+    "openai>=3.54.0",
+    "pypdfium2>=5.15.2",
+    "python-dotenv>=1.2.4",
+    "zss>=1.2.0",
+    "huggingface-hub>=2.4.0",
+    "pyarrow>=26.0.1",
+    "opencv-python-headless>=5.1.0.95",
+    "numpy>=2.4.6",
+    "fastapi>=0.163.2",
+    "uvicorn[standard]>=0.54.0",
+    "sqlalchemy>=2.1.9",
+    "alembic>=1.20.1",
+    "psycopg[binary]>=3.3.9",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "playwright>=1.65.2",
+    "pytest>=8.3",
+]
+
+[project.scripts]
+faktura-synth = "faktura.synth.cli:main"
+faktura-eval-extract = "faktura.evals.extraction:main"
+faktura-eval-validate = "faktura.evals.validation:main"
+faktura-bench-cord = "faktura.bench.cord:main"
+faktura-eval-reread = "faktura.evals.reread_eval:main"
+faktura-eval-match = "faktura.evals.matching_eval:main"
+faktura-seed = "faktura.app.seed:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/faktura"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
