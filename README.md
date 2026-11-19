@@ -1,15 +1,31 @@
 # Faktura
 
-Otomasi Accounts Payable: membaca faktur, mencocokkannya dengan PO dan bukti terima barang
-(*three-way match*), lalu hanya meneruskan faktur bermasalah ke manusia.
+[Bahasa Indonesia](README.id.md)
 
-> **Status: Fase 1 (MVP) selesai.** Sudah ada data sintetis berlabel, ekstraksi dengan
-> baca ulang terarah, validator deterministik, mesin pencocokan dengan eval end-to-end,
-> benchmark CORD, API antrean review dengan maker-checker dan audit trail tahan
-> manipulasi, serta UI. Belum ada: SSO, integrasi ERP, dan deployment (Fase 2–3).
-> README ini hanya menjelaskan yang sudah ada di kode.
+Accounts-payable automation: read supplier invoices, match them against the purchase order
+and goods receipt (*three-way match*), and send only the problem invoices to a human.
 
-## Dataset sintetis
+> **Status: Phase 1 (MVP) complete.** Labelled synthetic data, extraction with targeted
+> re-reading, deterministic validators, a matching engine with an end-to-end eval, a CORD
+> benchmark, a review-queue API with maker-checker and a tamper-evident audit trail, and a
+> UI. Not yet built: SSO, ERP integration, and deployment (phases 2–3). This README only
+> describes what is in the code.
+
+## Results at a glance
+
+| What | Result |
+|---|---|
+| Anomalies caught (price, quantity, duplicate, NPWP, VAT, bank account) | **99 / 99**, Rp775.6M at risk, 100% caught |
+| Clean invoices paid with a misread amount or account | **0** |
+| Invoices read fully correctly, after targeted re-read | 53.7% → **73.0%** (100% on clean PDFs) |
+| Field errors caught by deterministic validators vs. model self-flags | **75.5%** vs. 17% |
+| CORD v2 (public benchmark), zero-shot | TED accuracy **91.9** vs. 91.3 for fine-tuned Donut |
+| Extraction cost | ~USD 1 per 1,000 invoices |
+
+Re-read numbers are on 300 invoices held out from the 40 used to tune it; CORD numbers are
+on its test split, with prompts tuned on validation only. Matching numbers cover all 340.
+
+## Synthetic dataset
 
 ```bash
 uv sync
@@ -17,176 +33,187 @@ uv run faktura-synth --config configs/synth.yaml --out data/synth/v1
 uv run pytest
 ```
 
-Generator membuat vendor, PO, bukti terima barang, dan faktur PDF. Faktur PDF dibuat dengan
-variasi bahasa (ID/EN), format tanggal, format NPWP, dan efek hasil scan. Sebagian faktur
-sengaja diberi satu anomali:
+The generator creates vendors, POs, goods receipts, and invoice PDFs that vary in language
+(ID/EN), date format, NPWP (tax ID) format, and scan effects. Some invoices get exactly one
+injected anomaly:
 
-| Anomali | Contoh |
+| Anomaly | Example |
 |---|---|
-| `price_mismatch` | Harga satuan di faktur lebih tinggi 2–15% dari PO |
-| `qty_over_received` | Jumlah ditagih melebihi barang yang diterima |
-| `duplicate_invoice` | Faktur yang sama dikirim ulang |
-| `npwp_mismatch` | NPWP berbeda dari master vendor |
-| `vat_miscalc` | PPN dihitung dengan tarif yang salah |
-| `bank_account_changed` | Rekening tujuan berbeda dari master vendor |
+| `price_mismatch` | Invoice unit price 2–15% above the PO |
+| `qty_over_received` | Billed quantity exceeds what was received |
+| `duplicate_invoice` | The same invoice submitted again |
+| `npwp_mismatch` | NPWP differs from the vendor master |
+| `vat_miscalc` | VAT computed at the wrong rate |
+| `bank_account_changed` | Payee account differs from the vendor master |
 
-### v1 dan v2
+### v1 and v2
 
-v1 (`configs/synth.yaml`) memakai satu layout dengan scan ringan. Uji kecil 10 faktur v1
-dengan Luna mendapat akurasi 100%. Ini tanda datanya terlalu mudah, bukan tanda modelnya
-sempurna. v2 (`configs/synth_v2.yaml`) sengaja dibuat lebih sulit. Setiap faktor kesulitan
-dicatat terpisah, supaya eval bisa menunjukkan faktor mana yang membuat ekstraksi gagal:
+v1 (`configs/synth.yaml`) uses one layout with light scanning. A 10-invoice smoke test on
+v1 scored 100%, a sign that the data was too easy, not that the model was perfect. v2
+(`configs/synth_v2.yaml`) is deliberately harder. Each difficulty factor is recorded
+separately, so the eval can show which one makes extraction fail:
 
-| Faktor | Variasi |
+| Factor | Variants |
 |---|---|
-| Layout | classic, modern (header berwarna, baris zebra), compact (font kecil, nomor faktur pajak di footer), borderless (tanpa garis, total di kiri) |
-| Format angka | `Rp 1.234.567`, `Rp1.234.567,00`, `IDR 1,234,567` |
-| Format tanggal | `05/03/2025`, `5 Maret 2025`, `2025-03-05`, `05-Mar-2025` |
-| Deskripsi | 30% item memakai deskripsi panjang yang terpotong ke dua baris |
-| Degradasi | 0 PDF bersih, 1 scan ringan, 2 scan jelek (lipatan, kontras rendah, JPEG), 3 foto HP (perspektif, pencahayaan tidak rata) |
-| Stempel | 40% faktur level 2–3 diberi stempel "DITERIMA" yang menimpa area total |
+| Layout | classic, modern (coloured header, zebra rows), compact (small font, tax invoice number in the footer), borderless (no rules, totals on the left) |
+| Number format | `Rp 1.234.567`, `Rp1.234.567,00`, `IDR 1,234,567` |
+| Date format | `05/03/2025`, `5 Maret 2025`, `2025-03-05`, `05-Mar-2025` |
+| Descriptions | 30% of items use long descriptions that wrap to two lines |
+| Degradation | 0 clean PDF, 1 light scan, 2 poor scan (folds, low contrast, JPEG), 3 phone photo (perspective, uneven lighting) |
+| Stamps | 40% of level 2–3 invoices get a "DITERIMA" (received) stamp over the totals |
 
-Sebagian faktur level 3 yang terkena stempel memang memiliki digit yang tidak terbaca,
-bahkan oleh manusia. Pada kasus itu yang diukur adalah apakah model menandai field
-tersebut sebagai ragu, bukan apakah tebakannya kebetulan benar.
+Some stamped level-3 invoices have digits that are unreadable even to a human. For those,
+the eval measures whether the model flags the field as uncertain, not whether a guess
+happened to be right.
 
-Karena anomalinya disisipkan sendiri, label benarnya didapat tanpa labeling manual. Test
-`test_labels_match_independent_oracle` memeriksa ulang setiap label dengan aturan yang
-ditulis terpisah dari generator.
+Because the anomalies are injected, the ground truth comes without manual labelling. The
+test `test_labels_match_independent_oracle` re-checks every label with rules written
+separately from the generator.
 
-## Ekstraksi faktur
+## Invoice extraction
 
-Halaman PDF dirender ke gambar (~170 DPI), lalu dibaca model vision lewat Azure AI Foundry
-Responses API dengan output terstruktur (Pydantic). Model hanya menyalin apa yang tercetak.
-Perhitungan ulang dan keputusan dikerjakan kode deterministik di tahap pencocokan.
+The PDF page is rendered to an image (~170 DPI) and read by a vision model through the
+Azure AI Foundry Responses API with structured output (Pydantic). The model only copies
+what is printed. Recomputation and decisions are done by deterministic code in the
+matching stage.
 
-Model tidak diminta memberi skor confidence berupa angka, karena angka yang dilaporkan model
-sendiri biasanya tidak terkalibrasi. Sebagai gantinya, model menandai field yang sulit dibaca
-(`uncertain_fields`), dan eval mengukur seberapa banyak kesalahan yang benar-benar tertandai.
+The model is not asked for numeric confidence scores, because self-reported numbers are
+usually not calibrated. It flags hard-to-read fields instead (`uncertain_fields`), and
+the eval measures how many real errors those flags catch. They catch only 17%, so the
+pipeline relies on deterministic validators (format, arithmetic, vendor master), which
+catch 75.5% with no false alarms on correct reads. Flagged fields get a targeted re-read
+at higher resolution with zoomed tiles. Master data is never shown to the model, so a
+fraudulent value cannot be "corrected" into the expected one.
 
 ```bash
-cp .env.example .env   # isi endpoint dan key Azure pribadi
+cp .env.example .env   # fill in your own Azure endpoint and key
 uv run faktura-eval-extract --run runs/luna-smoke --limit 10
 ```
 
-Laporan eval berisi akurasi per field, persentase faktur yang benar sempurna, hasil per
-kondisi (hasil scan atau bukan, ID atau EN), kualitas penanda ketidakpastian, latensi
-p50/p95, dan estimasi biaya per 1.000 faktur. Output mentah model disimpan per faktur, jadi
-run yang terputus bisa dilanjutkan tanpa membayar dua kali.
+The eval report covers per-field accuracy, the share of fully correct invoices, slices by
+condition (scan level, ID or EN), flag quality, p50/p95 latency, and estimated cost per
+1,000 invoices. Raw model output is cached per invoice, so an interrupted run resumes
+without paying twice.
 
-## Keputusan pembayaran (three-way match)
+What did not work is logged too: OpenCV lighting correction for phone photos gave no gain
+(604 vs. 604 correct fields over 72 photos). See [`docs/experiments.md`](docs/experiments.md).
 
-Setiap faktur mendapat satu dari empat keputusan, dan setiap keputusan membawa alasan
-yang bisa dibaca auditor:
+## Payment decisions (three-way match)
 
-| Keputusan | Artinya |
+Every invoice gets one of four decisions, and each decision carries reasons an auditor
+can read:
+
+| Decision | Meaning |
 |---|---|
-| `approve` | Cocok dengan PO, bukti terima barang, dan master vendor, jadi dibayar otomatis |
-| `review_reading` | Hasil baca diragukan, jadi manusia mencocokkannya dengan dokumen |
-| `business_exception` | Harga, jumlah, atau PPN menyimpang dari PO, jadi perlu persetujuan bisnis |
-| `fraud_hold` | Rekening atau NPWP berubah, atau faktur duplikat, jadi pembayaran ditahan |
+| `approve` | Matches the PO, goods receipt, and vendor master, so it is paid automatically |
+| `review_reading` | The reading is in doubt, so a human checks it against the document |
+| `business_exception` | Price, quantity, or VAT deviates from the PO, so it needs business approval |
+| `fraud_hold` | Bank account or NPWP changed, or the invoice is a duplicate, so payment is held |
 
-Rekening atau NPWP yang beda dari master **selalu ditahan**, walaupun kemungkinan hanya
-salah baca. Perubahan data pembayaran adalah modus fraud AP yang paling umum.
+A bank account or NPWP that differs from the master is **always held**, even if it is
+probably a misread. Changed payment details are the most common AP fraud pattern.
 
-Hasil pada 340 faktur sintetis v2, memakai pembacaan model sungguhan (bacaan pertama
-ditambah baca ulang field yang ditandai):
+Results on 340 synthetic v2 invoices, using real model readings (first pass plus re-read
+of flagged fields):
 
-- **Anomali tertangkap: 99 dari 99.** Uang yang dipertaruhkan Rp775,6 juta, dan 100%
-  tertangkap.
-- **Faktur bersih yang dibayar dengan nominal atau rekening salah baca: 0.**
-- **Faktur bersih yang lolos otomatis:** 100% untuk PDF, 98% untuk scan ringan, 64% untuk
-  scan jelek, dan 17% untuk foto HP. Sisanya dikirim ke manusia.
+- **Anomalies caught: 99 of 99.** Rp775.6M at risk, 100% caught.
+- **Clean invoices paid with a misread amount or account: 0.**
+- **Clean invoices auto-approved:** 100% of PDFs, 98% of light scans, 64% of poor scans,
+  and 17% of phone photos. The rest go to a human.
 
 ```bash
-uv run faktura-eval-match --oracle            # menguji aturan dengan pembacaan sempurna
-uv run faktura-eval-match --runs runs/<run>   # menguji dengan pembacaan model
+uv run faktura-eval-match --oracle            # test the rules with perfect readings
+uv run faktura-eval-match --runs runs/<run>   # test with model readings
 ```
 
-## Antrean review dan audit trail
+## Review queue and audit trail
 
-Faktur yang tidak lolos otomatis masuk antrean. Aturan alur kerjanya dijaga di API, bukan
-di UI:
+Invoices that are not auto-approved go to a queue. Workflow rules are enforced in the API,
+not in the UI:
 
-- **Maker-checker.** Staf AP (maker) mengoreksi atau mengonfirmasi field, lalu mesin
-  pencocokan memutuskan ulang. Faktur yang pernah disentuh manusia harus disetujui
-  approver lain. Orang yang mengubah faktur tidak bisa menyetujuinya.
-- **`fraud_hold`** hanya bisa diajukan setelah verifikasi vendor dicatat (siapa yang
-  dihubungi, lewat kanal apa, dan apa yang dikonfirmasi).
-- **Hasil baca asli model tidak pernah ditimpa.** Koreksi manusia disimpan terpisah.
-- **Audit trail tahan manipulasi.** Setiap event menyimpan hash event sebelumnya, sehingga
-  `GET /audit/verify` mendeteksi baris yang diubah atau dihapus. Di Postgres, trigger
-  menolak UPDATE dan DELETE pada tabel audit.
-- **Optimistic concurrency.** Aksi dengan versi faktur yang sudah usang ditolak (409).
+- **Maker-checker.** AP staff (makers) correct or confirm fields, then the matching engine
+  decides again. An invoice a human has touched must be approved by a different approver.
+  Whoever changed an invoice cannot approve it.
+- **`fraud_hold`** can only be submitted after a vendor verification is recorded (who was
+  contacted, through which channel, and what they confirmed).
+- **The model's original reading is never overwritten.** Human corrections are stored
+  separately.
+- **Tamper-evident audit trail.** Every event stores the hash of the previous one, so
+  `GET /audit/verify` detects edited or deleted rows. In Postgres, a trigger rejects
+  UPDATE and DELETE on the audit table.
+- **Optimistic concurrency.** Actions against a stale invoice version are rejected (409).
 
 ```bash
 docker compose up -d db
 export DATABASE_URL=postgresql+psycopg://faktura:faktura-dev@127.0.0.1:5433/faktura
 uv run alembic upgrade head
 uv run faktura-seed --runs runs/luna-v2-reread-tiles-final runs/luna-v2-reread-pilot-tiles runs/luna-v2
-uv run uvicorn faktura.app.api:app --port 8077   # Swagger UI di /docs
+uv run uvicorn faktura.app.api:app --port 8077   # Swagger UI at /docs
 ```
 
-Login masih placeholder: identitas diambil dari header `X-User` dan `X-Role`. Ini hanya
-untuk development. SSO (Keycloak) dijadwalkan di Fase 2.
+Login is a placeholder: identity comes from the `X-User` and `X-Role` headers, for
+development only. SSO (Keycloak) is planned for phase 2.
 
-### UI antrean review
+### Review UI
 
-![Antrean review](docs/screenshots/1-queue.png)
+![Review queue](docs/screenshots/1-queue.png)
 
-Halaman detail menampilkan gambar faktur di samping hasil baca. Field yang ditandai
-disorot, dan nilai asli bacaan model tetap terlihat di samping koreksi manusia:
+The detail page shows the invoice image next to the reading. Flagged fields are
+highlighted, and the model's original value stays visible next to the human correction:
 
-![Faktur ditahan karena NPWP salah baca](docs/screenshots/2-held-for-npwp.png)
+![Invoice held because the NPWP was misread](docs/screenshots/2-held-for-npwp.png)
 
-Contoh alur di screenshot: NPWP terbaca dengan dua digit tertukar, sehingga faktur
-ditahan. Staf AP (Budi) mengoreksinya sesuai dokumen, dan mesin pencocokan memutuskan
-ulang. Karena faktur sudah disentuh manusia, pembayaran tetap perlu disetujui approver
-lain (Sari). Seluruh langkah tercatat di audit trail:
+The flow in the screenshots: the NPWP was read with two digits swapped, so the invoice was
+held. AP staff (Budi) corrects it from the document, and the matching engine decides
+again. Because a human touched the invoice, payment still needs a different approver
+(Sari). Every step is in the audit trail:
 
-![Disetujui, dengan audit trail](docs/screenshots/4-approved-with-audit.png)
+![Approved, with audit trail](docs/screenshots/4-approved-with-audit.png)
 
 ```bash
 cd web && npm install && npm run build
 FAKTURA_API_URL=http://127.0.0.1:8077 npm start      # http://127.0.0.1:3077
-npm run verify                                        # typecheck + lint + unit test
+npm run verify                                        # typecheck + lint + unit tests
 ```
 
-Next.js 16 memanggil FastAPI dari server, jadi browser tidak pernah berbicara langsung
-ke API. Design token-nya sama dengan TokenWatch.
+Next.js 16 calls FastAPI from the server, so the browser never talks to the API directly.
 
-**Test end-to-end di browser sungguhan** (Playwright) menjalankan skenario di atas dan
-menghasilkan screenshot-nya:
+**End-to-end test in a real browser** (Playwright) runs the scenario above and produces
+the screenshots:
 
 ```bash
 uv run playwright install chromium
-uv run python scripts/e2e_demo.py --out docs/screenshots   # API dan web harus sudah jalan
+uv run python scripts/e2e_demo.py --out docs/screenshots   # API and web must be running
 ```
 
-## Benchmark eksternal: CORD v2
+## External benchmark: CORD v2
 
-Untuk perbandingan dengan model publik, ekstraksi juga diuji di
-[CORD v2](https://huggingface.co/datasets/naver-clova-ix/cord-v2) (struk toko dan restoran
-Indonesia, CC BY 4.0). Penilaiannya memakai kode metrik resmi Donut, yang diporting
-lengkap dengan lisensi MIT-nya, sehingga angkanya bisa dibandingkan langsung.
+For comparison with public models, extraction was also tested on
+[CORD v2](https://huggingface.co/datasets/naver-clova-ix/cord-v2) (Indonesian shop and
+restaurant receipts, CC BY 4.0). Scoring uses Donut's official metric code, ported with
+its MIT licence, so the numbers are directly comparable.
 
-| Model | Latihan di CORD | Akurasi TED | F1 |
+| Model | Trained on CORD | TED accuracy | F1 |
 |---|---|---|---|
-| gpt-6-luna (zero-shot, prompt p2) | tidak ada | **91,9** | 82,1 |
-| Donut (fine-tuned) | 800 struk | 91,3 | **84,1** |
+| gpt-6-luna (zero-shot, prompt p2) | no | **91.9** | 82.1 |
+| Donut (fine-tuned) | 800 receipts | 91.3 | **84.1** |
 
-Prompt disetel hanya di split validasi, lalu split uji dijalankan satu kali. Selisih F1
-sebagian besar berasal dari format salinan, misalnya `8,000` ditulis `8.000` pada struk
-dot-matrix. Kalau perbedaan spasi, huruf besar-kecil, dan pemisah ribuan diabaikan, F1
-menjadi 86,9. Angka ini metrik sekunder dan tidak bisa dibandingkan dengan angka publikasi.
+Prompts were tuned only on the validation split, then the test split was run once. Most of
+the F1 gap comes from transcription format, for example `8,000` written as `8.000` on
+dot-matrix receipts. Ignoring whitespace, case, and thousands separators, F1 is 86.9. That
+is a secondary metric and not comparable to published numbers.
 
-Catatan: perbandingan zero-shot dengan model fine-tuned tidak setara, dan CORD sudah publik
-sejak 2019 sehingga mungkin termasuk data pra-latih model. Detail lengkap ada di
+Caveats: zero-shot versus fine-tuned is not a like-for-like comparison, and CORD has been
+public since 2019, so it may be in the model's pre-training data. Full details are in
 [`docs/experiments.md`](docs/experiments.md).
 
 ```bash
 uv run faktura-bench-cord --split validation --prompt p2 --run runs/cord-val-p2
 ```
 
-Semua data fiktif, dan setiap halaman bertanda "CONTOH SINTETIS". Asumsi domain dicatat
-di [`docs/assumptions.md`](docs/assumptions.md).
+All data is fictitious, and every page is marked "CONTOH SINTETIS" (synthetic sample).
+Domain assumptions are in [`docs/assumptions.md`](docs/assumptions.md).
+
+## License
+
+[MIT](LICENSE).
