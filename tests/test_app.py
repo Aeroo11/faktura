@@ -1,65 +1,14 @@
 """Workflow, maker-checker, and audit-trail tests through the HTTP API (SQLite in memory)."""
 
-import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from faktura.app import service
-from faktura.app.api import app, load_context
-from faktura.app.auth import DevHeaderAuth
-from faktura.app.db import Base, make_engine, make_sessionmaker
-from faktura.evals.extraction import load_labels
+from faktura.app.api import app
 from faktura.evals.matching_eval import perfect_reading
 from faktura.learn.misread import Correction, MisreadModel
-from faktura.synth.cli import write_dataset
-from faktura.synth.config import SynthConfig
-from faktura.synth.generate import generate
-
-STAFF = {"X-User": "budi", "X-Role": "ap_staff"}
-STAFF2 = {"X-User": "dewi", "X-Role": "ap_staff"}
-APPROVER = {"X-User": "sari", "X-Role": "approver"}
-BUDI_AS_APPROVER = {"X-User": "budi", "X-Role": "approver"}
-
-
-@pytest.fixture(scope="module")
-def data_dir(tmp_path_factory):
-    cfg = SynthConfig(seed=41, n_purchase_orders=40, anomaly_rate=0.4)
-    out = tmp_path_factory.mktemp("app")
-    write_dataset(generate(cfg), cfg, out, render=True)
-    return out
-
-
-@pytest.fixture()
-def env(data_dir):
-    """Fresh DB per test, seeded with perfect readings except where a test overrides."""
-    engine = make_engine("sqlite://")
-    Base.metadata.create_all(engine)
-    app.state.sessions = make_sessionmaker(engine)
-    app.state.ctx = load_context(data_dir)
-    app.state.auth = DevHeaderAuth()
-    labels = load_labels(data_dir)
-    with TestClient(app, headers=STAFF) as client:
-        yield client, labels, data_dir
-    engine.dispose()
-
-
-def _ingest(env, lb, **overrides):
-    _, _, data_dir = env
-    reading = perfect_reading(lb.invoice).model_copy(update=overrides).model_dump(mode="json")
-    with app.state.sessions() as s:
-        row = service.ingest(
-            s,
-            app.state.ctx,
-            lb.invoice_id,
-            str(data_dir / "invoices" / f"{lb.invoice_id}.pdf"),
-            reading,
-        )
-        s.commit()
-        return row.id
-
-
-def _clean(labels):
-    return [lb for lb in labels if not lb.anomalies]
+from tests.helpers import APPROVER, BUDI_AS_APPROVER, STAFF, STAFF2
+from tests.helpers import clean as _clean
+from tests.helpers import ingest as _ingest
 
 
 def test_clean_invoice_is_auto_approved_with_audit_trail(env):
@@ -115,7 +64,7 @@ def test_roles_are_enforced(env):
 def test_fraud_hold_needs_vendor_verification(env):
     client, labels, _ = env
     lb = _clean(labels)[0]
-    inv_id = _ingest(env, lb, bank_account="9" * 10)
+    inv_id = _ingest(env, lb, vendor_npwp="1" * 16)
     assert client.get(f"/invoices/{inv_id}").json()["decision"] == "fraud_hold"
 
     r = client.post(
@@ -225,6 +174,45 @@ def test_image_list_and_summary(env):
     assert len(client.get("/invoices").json()["items"]) == 4
     groups = client.get("/summary").json()["groups"]
     assert sum(g["count"] for g in groups) == 4
+
+
+def test_cumulative_billing_still_counts_earlier_invoices_on_the_same_po(env):
+    """The ledger replays billing for the invoice's own PO only; it must still add up."""
+    client, labels, _ = env
+    lb = _clean(labels)[0]
+    _ingest(env, _clean(labels)[1])  # another PO: not replayed, must not matter
+    first = _ingest(env, lb)
+    assert client.get(f"/invoices/{first}").json()["state"] == "approved"
+
+    ln = lb.invoice.lines[0]
+    line = ln.model_copy(update={"qty": 1, "amount": ln.unit_price})
+    vat = app.state.ctx.vat_bps * line.amount // 10_000
+    second = _ingest(
+        env,
+        lb,
+        invoice_id="later",
+        invoice_number=lb.invoice.invoice_number + "-B",
+        tax_invoice_number="9" * 16,
+        lines=[line],
+        dpp=line.amount,
+        vat=vat,
+        total=line.amount + vat,
+    )
+    assert "qty_cumulative" in client.get(f"/invoices/{second}").json()["reason_codes"]
+
+
+def test_ledger_replays_billing_only_for_the_requested_po(env):
+    _, labels, _ = env
+    for lb in _clean(labels)[:4]:
+        _ingest(env, lb)
+    po = _clean(labels)[0].invoice.po_number
+    with app.state.sessions() as s:
+        md = service.master_snapshot(s, app.state.ctx)
+        full = service.build_ledger(s, 99, md)
+        scoped = service.build_ledger(s, 99, md, po_number=po)
+    assert {k[0] for k in scoped.billed} == {po}
+    assert {k: v for k, v in full.billed.items() if k[0] == po} == dict(scoped.billed)
+    assert len(scoped.seen) == len(full.seen) == 4  # duplicates still see everything
 
 
 def _one_digit_misread(value: str) -> str:

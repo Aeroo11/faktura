@@ -205,6 +205,27 @@ def format_report(rep: dict) -> str:
     return "\n".join(out)
 
 
+def check(rep: dict, exact_routing: bool) -> list[str]:
+    """Release gate: what must never regress. Empty means pass.
+
+    Always: no anomaly is paid automatically, no money at risk slips through, and no
+    clean invoice is paid with a misread amount or account. With `exact_routing`
+    (perfect readings), every invoice must also get exactly its expected decision.
+    """
+    failures = []
+    for kind, k in rep["per_kind"].items():
+        if kind != "clean" and k["not_auto_approved"] < 1.0:
+            failures.append(f"{kind}: {k['not_auto_approved']:.1%} held, must be 100%")
+        if exact_routing and k["routed_as_expected"] < 1.0:
+            failures.append(f"{kind}: routed as expected {k['routed_as_expected']:.1%}")
+    money = rep["money"]
+    if money.get("caught", 0) < money.get("at_risk", 0):
+        failures.append(f"money caught {money.get('caught', 0)} < at risk {money['at_risk']}")
+    if rep["wrong_payments"]:
+        failures.append(f"{len(rep['wrong_payments'])} clean invoices paid with misread values")
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="faktura-eval-match")
     parser.add_argument("--data", type=Path, default=Path("data/synth/v2"))
@@ -217,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--oracle", action="store_true", help="use perfect readings")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--check", action="store_true", help="exit 1 if the release gate fails (see check())"
+    )
     args = parser.parse_args(argv)
     if not args.oracle and not args.runs:
         parser.error("give --runs or --oracle")
@@ -228,6 +252,13 @@ def main(argv: list[str] | None = None) -> int:
         (args.out / "match.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
         (args.out / "match.md").write_text(text, encoding="utf-8")
     print(text)
+    if args.check:
+        failures = check(rep, exact_routing=args.oracle)
+        for f in failures:
+            print(f"GATE FAILED: {f}")
+        if failures:
+            return 1
+        print("gate passed")
     return 0
 
 

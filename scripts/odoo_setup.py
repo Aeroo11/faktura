@@ -47,6 +47,12 @@ groups = [
     "purchase.group_purchase_user",
     "stock.group_stock_user",
     "account.group_account_invoice",
+    # Trust a vendor bank account once Faktura's bank-change workflow has verified it
+    # (request, call-back to the number on file, approval by a third person). See
+    # docs/bank-changes.md for why the integration holds this right.
+    "account.group_validate_bank_account",
+    # Odoo only lets contact managers create a res.partner.bank record.
+    "base.group_partner_manager",
 ]
 bot = env["res.users"].with_context(active_test=False).search([("login", "=", BOT_LOGIN)])
 if not bot:

@@ -8,7 +8,9 @@ Life of an invoice:
                   AWAITING_APPROVAL. Anything a person touched is never paid on their
                   word alone. The maker can also submit an exception or a fraud hold
                   with a justification; a fraud hold also needs a recorded vendor
-                  verification (call-back to a known contact).
+                  verification (call-back to a known contact). A changed bank account
+                  is never accepted here: only an approved bank change releases it
+                  (bank_changes.py).
     AWAITING_APPROVAL: an approver who is not one of the invoice's makers approves.
     Either role can reject while the invoice is open.
 
@@ -18,16 +20,25 @@ Every change and its audit event are written in the same transaction.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime as dt
 from dataclasses import dataclass
 from typing import Any
 
+from opentelemetry import trace
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from faktura.app import audit
-from faktura.app.db import ErpOutbox, InvoiceRow, OutboxStatus, State
+from faktura.app.db import (
+    BankChangeRow,
+    BankChangeStatus,
+    ErpOutbox,
+    InvoiceRow,
+    OutboxStatus,
+    State,
+)
 from faktura.extract.schema import ExtractedInvoice, FieldName
 from faktura.learn.misread import MisreadModel
 from faktura.master import MasterData, MasterSource
@@ -38,6 +49,8 @@ AP_STAFF = "ap_staff"
 APPROVER = "approver"
 ROLES = {AP_STAFF, APPROVER}
 SYSTEM = "system"
+BANK_REASONS = {"bank_master", "bank_name_master"}  # resolved only by a bank-change request
+_tracer = trace.get_tracer("faktura.service")
 
 
 class WorkflowError(Exception):
@@ -86,7 +99,7 @@ def _get(session: Session, invoice_id: str, lock: bool = True) -> InvoiceRow:
         stmt = stmt.with_for_update()
     row = session.execute(stmt).scalar()
     if row is None:
-        raise NotFound(invoice_id)
+        raise NotFound(f"invoice {invoice_id}")
     return row
 
 
@@ -117,17 +130,28 @@ def _effective_reading(row: InvoiceRow) -> ExtractedInvoice:
     )
 
 
-def build_ledger(session: Session, before_seq: int, md: MasterData) -> Ledger:
-    """What AP had received before this invoice (for duplicates and cumulative billing)."""
+def build_ledger(
+    session: Session, before_seq: int, md: MasterData, po_number: str | None = None
+) -> Ledger:
+    """What AP had received before this invoice (for duplicates and cumulative billing).
+
+    Billing is replayed only for earlier invoices on `po_number`, the only PO the
+    cumulative check looks at; None replays all. Replaying every invoice fuzzy-matches
+    every line of AP's whole history, which a trace showed taking ~95% of each decision
+    (0.3-0.9 s at 340 invoices, growing linearly).
+    """
     ledger = Ledger()
+    target = po_number.strip() if po_number is not None else None
     earlier = session.execute(
         select(InvoiceRow).where(InvoiceRow.seq < before_seq).order_by(InvoiceRow.seq)
     ).scalars()
     for r in earlier:
         ext = ExtractedInvoice.model_validate(r.reading)
         vendor, _ = resolve_vendor(ext, md)
-        if r.state != State.REJECTED and not any(
-            x["code"].startswith("duplicate") for x in r.reasons
+        if (
+            (target is None or (ext.po_number or "").strip() == target)
+            and r.state != State.REJECTED
+            and not any(x["code"].startswith("duplicate") for x in r.reasons)
         ):
             add_billing(ext, md, ledger)
         ledger.record(r.id, vendor.vendor_id if vendor else None, ext)
@@ -147,9 +171,42 @@ def _approved_numbers(session: Session, vendor_id: str | None, exclude: str) -> 
     return [r["invoice_number"] for r in rows if r.get("invoice_number")]
 
 
+def master_snapshot(session: Session, ctx: Context) -> MasterData:
+    """Master data with every approved bank-account change applied (later ones win).
+
+    In Odoo mode the change is also written to the ERP (faktura-erp-sync); applying it
+    here as well means decisions do not wait for that write.
+    """
+    md = ctx.master.snapshot()
+    changes = session.execute(
+        select(BankChangeRow)
+        .where(BankChangeRow.status == BankChangeStatus.APPROVED)
+        .order_by(BankChangeRow.id)
+    ).scalars()
+    vendors = None
+    for c in changes:
+        v = (vendors or md.vendors).get(c.vendor_id)
+        if v is None:
+            continue
+        vendors = vendors or dict(md.vendors)
+        vendors[c.vendor_id] = v.model_copy(
+            update={"bank_name": c.new_bank_name, "bank_account": c.new_bank_account}
+        )
+    return md if vendors is None else dataclasses.replace(md, vendors=vendors)
+
+
 def _evaluate(session: Session, ctx: Context, row: InvoiceRow) -> None:
+    """Decide the invoice again and record it (a trace span when tracing is on)."""
+    with _tracer.start_as_current_span("faktura.decide") as span:
+        span.set_attribute("faktura.invoice_id", row.id)
+        _decide_and_record(session, ctx, row)
+        span.set_attribute("faktura.decision", row.decision)
+        span.set_attribute("faktura.reasons", sorted({r["code"] for r in row.reasons}))
+
+
+def _decide_and_record(session: Session, ctx: Context, row: InvoiceRow) -> None:
     ext = _effective_reading(row)
-    snapshot = ctx.master.snapshot()
+    snapshot = master_snapshot(session, ctx)
     vendor, _ = resolve_vendor(ext, snapshot)
     vid = vendor.vendor_id if vendor else None
     # Per-call copy: requests run in a thread pool and must not share this history.
@@ -159,7 +216,7 @@ def _evaluate(session: Session, ctx: Context, row: InvoiceRow) -> None:
         row.id,
         ext,
         md,
-        build_ledger(session, row.seq, md),
+        build_ledger(session, row.seq, md, po_number=ext.po_number or ""),
         ctx.vat_bps,
         misread=ctx.misread,
         verified=set(row.human_verified),
@@ -346,6 +403,13 @@ def submit(
         raise WorkflowError(
             "check the flagged NPWP / bank account against the page first: correct it, or "
             "confirm the reading (a confirmed difference is held for vendor verification)"
+        )
+    if any(r["code"] in BANK_REASONS for r in row.reasons):
+        # Paying a new account on the strength of the invoice that asks for it is the
+        # fraud. The account is accepted, or not, in a bank-change request.
+        raise WorkflowError(
+            "a changed bank account is never accepted on the invoice itself: open a "
+            "bank-change request (call-back to the number on file, then a different approver)"
         )
     verification = None
     if row.decision == Status.HOLD:

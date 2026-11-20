@@ -22,6 +22,8 @@ class Vendor(BaseModel):
     address: str
     bank_name: str
     bank_account: str
+    # Number on file for call-backs. Never taken from an invoice or a change request.
+    phone: str = ""
 
 
 class POLine(BaseModel):

@@ -178,3 +178,10 @@ def test_cached_master_refetches_after_ttl():
     now[0] = 30.0
     src.snapshot()
     assert fetched == [0.0, 30.0]
+
+    # A background refresh resets the age, so requests do not fetch themselves.
+    now[0] = 50.0
+    src.refresh()
+    now[0] = 75.0
+    src.snapshot()
+    assert fetched == [0.0, 30.0, 50.0]

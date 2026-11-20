@@ -1,8 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { unstable_rethrow } from "next/navigation";
-import { ApiError, postAction } from "@/lib/api";
+import { redirect, unstable_rethrow } from "next/navigation";
+import { ApiError, postAction, postBankChange } from "@/lib/api";
 import { type FieldKind, parseFieldValue } from "@/lib/fields";
 
 // A "use server" module may only export async functions, so the initial form state
@@ -22,22 +22,71 @@ function version(form: FormData): number | undefined {
   return Number.isFinite(v) && v > 0 ? v : undefined;
 }
 
+/** Turn an API failure into a message for the form (redirects pass through). */
+function failure(e: unknown): ActionState {
+  unstable_rethrow(e); // a redirect to /login when the session has ended
+  if (e instanceof ApiError) {
+    const prefix =
+      e.status === 403 ? "Not allowed" : e.status === 409 ? "Conflict" : e.status === 422 ? "Invalid" : "Error";
+    return { ok: false, message: `${prefix}: ${e.message}` };
+  }
+  return { ok: false, message: "Could not reach the Faktura API." };
+}
+
 /** Run one API action and turn domain errors into a message for the form. */
 async function run(id: string, action: string, body: unknown, done: string): Promise<ActionState> {
   try {
     await postAction(id, action, body);
   } catch (e) {
-    unstable_rethrow(e); // a redirect to /login when the session has ended
-    if (e instanceof ApiError) {
-      const prefix =
-        e.status === 403 ? "Not allowed" : e.status === 409 ? "Conflict" : e.status === 422 ? "Invalid" : "Error";
-      return { ok: false, message: `${prefix}: ${e.message}` };
-    }
-    return { ok: false, message: "Could not reach the Faktura API." };
+    return failure(e);
   }
   revalidatePath(`/invoices/${id}`);
   revalidatePath("/");
   return { ok: true, message: done };
+}
+
+/** A bank-change action. Invoices it touches are re-decided, so every page refreshes. */
+async function runChange(id: number | null, action: string, body: unknown, done: string): Promise<ActionState> {
+  let changeId: number;
+  try {
+    changeId = (await postBankChange(id, action, body)).id;
+  } catch (e) {
+    return failure(e);
+  }
+  revalidatePath("/", "layout");
+  if (id == null) redirect(`/bank-changes/${changeId}`);
+  return { ok: true, message: done };
+}
+
+export async function requestBankChange(_: ActionState, form: FormData): Promise<ActionState> {
+  return runChange(
+    null,
+    "",
+    { source_invoice_id: str(form, "invoice_id"), channel: str(form, "channel") },
+    "Bank-change request recorded.",
+  );
+}
+
+export async function recordCallback(_: ActionState, form: FormData): Promise<ActionState> {
+  const outcome = str(form, "outcome");
+  return runChange(
+    Number(str(form, "id")),
+    "callback",
+    { spoke_with: str(form, "spoke_with"), outcome, note: str(form, "note"), version: version(form) },
+    outcome === "denied"
+      ? "Recorded: the vendor denied the change. The request and the invoices paying into it are rejected."
+      : "Recorded: the vendor confirmed. An approver who was not involved decides next.",
+  );
+}
+
+export async function decideBankChange(_: ActionState, form: FormData): Promise<ActionState> {
+  const approve = str(form, "decision") === "approve";
+  return runChange(
+    Number(str(form, "id")),
+    approve ? "approve" : "reject",
+    { note: str(form, "note"), version: version(form) },
+    approve ? "Approved: the new account is on file and open invoices were re-checked." : "Rejected.",
+  );
 }
 
 export async function correctField(_: ActionState, form: FormData): Promise<ActionState> {

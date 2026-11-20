@@ -1,5 +1,6 @@
 # Faktura
 
+[![CI](https://github.com/Aeroo11/faktura/actions/workflows/ci.yml/badge.svg)](https://github.com/Aeroo11/faktura/actions/workflows/ci.yml)
 [Bahasa Indonesia](README.id.md)
 
 Accounts-payable automation: read supplier invoices, match them against the purchase order
@@ -9,9 +10,9 @@ and goods receipt (*three-way match*), and send only the problem invoices to a h
 > re-reading, deterministic validators, a matching engine with an end-to-end eval, a CORD
 > benchmark, a review-queue API with maker-checker and a tamper-evident audit trail, and a
 > UI. Phase 2 in progress: Faktura now reads master data from an ERP (Odoo 20) and posts
-> approved invoices back to it as vendor bills, and users sign in through Keycloak. Not yet
-> built: deployment. This
-> README only describes what is in the code.
+> approved invoices back to it as vendor bills, users sign in through Keycloak, it learns
+> from corrections, and vendor bank-account changes go through a call-back workflow. Not
+> yet built: deployment. This README only describes what is in the code.
 
 ## Results at a glance
 
@@ -35,6 +36,13 @@ uv sync
 uv run faktura-synth --config configs/synth.yaml --out data/synth/v1
 uv run pytest
 ```
+
+**CI** (GitHub Actions) runs on every push and pull request: ruff, the test suite
+(including migrations-vs-models, the append-only audit trigger, and the bank-change
+workflow on a real Postgres), the web app's typecheck, lint, tests and build, and a
+release gate: the matching engine, given perfect readings of all 340 v2 invoices, must
+hold every anomaly and route every invoice as labelled
+(`faktura-eval-match --oracle --check`). No model calls and no secrets are needed.
 
 The generator creates vendors, POs, goods receipts, and invoice PDFs that vary in language
 (ID/EN), date format, NPWP (tax ID) format, and scan effects. Some invoices get exactly one
@@ -138,7 +146,8 @@ not in the UI:
   decides again. An invoice a human has touched must be approved by a different approver.
   Whoever changed an invoice cannot approve it.
 - **`fraud_hold`** can only be submitted after a vendor verification is recorded (who was
-  contacted, through which channel, and what they confirmed).
+  contacted, through which channel, and what they confirmed). A new bank account is never
+  accepted on the invoice: it goes through a bank-change request (below).
 - **The model's original reading is never overwritten.** Human corrections are stored
   separately.
 - **Tamper-evident audit trail.** Every event stores the hash of the previous one, so
@@ -209,6 +218,56 @@ Replayed in arrival order, learning only from earlier corrections: false fraud a
 235 forged one-digit changes all held after the page check. Feeding the same misread
 patterns into the re-read prompt made reading **worse** (73.0% → 66.9% on held-out
 data), so that was not adopted. Details: [`docs/learning.md`](docs/learning.md).
+
+## Vendor bank-account changes
+
+The most common AP theft is asking the team to pay a real invoice into a different
+account: an email "from the vendor", a letter on copied letterhead, or an invoice that
+prints a new account. Nothing on the document tells a fake change from a real one. So
+Faktura never accepts a new account from an invoice: the invoice is held, cannot be
+submitted, and is released only by a **bank-change request** that takes three different
+people:
+
+1. **AP staff (Budi)** check the account against the page and record the request.
+2. **Another AP staff member (Dewi)** calls the vendor on **the number already on file**.
+   Faktura shows and records that number itself, so a number from the invoice or email
+   cannot be used. If the vendor denies the change, the request and every open invoice
+   asking to be paid into that account are rejected.
+3. **An approver who took no part (Sari)** approves. The new account replaces the old one
+   in the master data, open invoices are decided again, and the payment still needs a
+   different approver (Rina). With Odoo, `faktura-erp-sync` trusts the new account there
+   and stops trusting the old one.
+
+![Call-back to the number on file](docs/screenshots/8-callback-number-on-file.png)
+
+```bash
+uv run python scripts/e2e_bank_change.py --out docs/screenshots --erp
+```
+
+Details, the demo, and the trade-off in the integration's Odoo rights:
+[`docs/bank-changes.md`](docs/bank-changes.md).
+
+## Observability
+
+Prometheus metrics, a Grafana dashboard with alert rules, JSON request logs with request
+ids, and OpenTelemetry traces (API, SQL, Odoo calls, each matching decision). Besides
+latency and errors, the metrics track the work itself: invoices and rupiah held, ERP
+posting backlog, bank changes waiting, and whether the audit hash chain still verifies.
+
+![Grafana dashboard](docs/screenshots/obs-1-grafana.png)
+
+The first traces paid for themselves: a field correction took 724 ms, almost all of it
+replaying the billing of AP's entire history to check one PO, plus an ERP refresh on the
+request path when the cache expired. Both fixed: **724 → 75 ms**, with identical decisions
+for all 340 invoices.
+
+```bash
+docker compose --profile obs up -d     # Prometheus :9090, Grafana :3300, Jaeger :16686
+FAKTURA_METRICS_PORT=9077 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+    uv run uvicorn faktura.app.api:app --port 8077
+```
+
+Details: [`docs/observability.md`](docs/observability.md).
 
 ## ERP integration (Odoo 20)
 

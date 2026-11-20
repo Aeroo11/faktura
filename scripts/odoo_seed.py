@@ -49,6 +49,7 @@ for v in vendors:
                 "ref": v["vendor_id"],
                 "vat": v["npwp"],
                 "street": v["address"],
+                "phone": v.get("phone") or False,
                 "country_id": env.ref("base.id").id,
                 "supplier_rank": 1,
             }
@@ -60,12 +61,18 @@ for v in vendors:
                 "bank_name": v["bank_name"],
             }
         )
+    if v.get("phone") and not p.phone:  # seeded before vendors had a phone on file
+        p.phone = v["phone"]
     # The onboarding account counts as verified. Odoo refuses to let OdooBot (which
     # `odoo shell` runs as) trust a bank account, so a named admin user does it.
     account = v["bank_account"]
     onboarded = p.bank_ids.filtered(lambda b, account=account: b.account_number == account)
     if onboarded and not onboarded.allow_out_payment:
         onboarded.with_user(admin).allow_out_payment = True
+    # Re-running the seed resets the vendor to its onboarding account, e.g. after the
+    # bank-change demo trusted a new one.
+    for other in (p.bank_ids - onboarded).filtered("allow_out_payment"):
+        other.with_user(admin).allow_out_payment = False
     partners[v["vendor_id"]] = p
 
 # Products, keyed by SKU. The shortest description seen becomes the product name.

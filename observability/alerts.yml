@@ -1,0 +1,52 @@
+# Alerts for what an AP team and its operators must act on. See docs/observability.md.
+groups:
+  - name: faktura
+    rules:
+      - alert: AuditChainBroken
+        expr: faktura_audit_chain_ok == 0
+        labels: {severity: critical}
+        annotations:
+          summary: "The audit hash chain no longer verifies: history was edited or deleted"
+
+      - alert: FakturaApiDown
+        expr: up{job="faktura-api"} == 0 or faktura_db_up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "The API or its database cannot be read"
+
+      - alert: ErpPostingNeedsAttention
+        expr: faktura_erp_outbox{status="needs_attention"} > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} approved invoices could not be posted to the ERP; a person must look"
+
+      - alert: ErpPostingBacklog
+        expr: faktura_erp_outbox_oldest_pending_seconds > 900
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "An approved invoice has waited over 15 minutes to reach the ERP (is faktura-erp-sync running?)"
+
+      - alert: BankChangeNotInErp
+        expr: faktura_bank_changes_erp{erp_status="needs_attention"} > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "A verified bank-account change could not be written to the ERP; bills to it are waiting"
+
+      - alert: ApiServerErrors
+        expr: |
+          sum(rate(faktura_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(faktura_http_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "More than 5% of API requests fail with a server error"
+
+      - alert: ApiSlow
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(faktura_http_request_duration_seconds_bucket[5m]))) > 2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "p95 API latency above 2 s"

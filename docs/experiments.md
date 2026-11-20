@@ -3,6 +3,34 @@
 Newest first. Every number comes from a run directory under `runs/` (git-ignored); the
 command to reproduce it is listed with each entry.
 
+## 2026-11-20 · What the first traces showed: decision latency
+
+Tracing (`docs/observability.md`) on the demo stack: Postgres, Odoo master, 340 invoices.
+The first trace of a field correction (`POST /invoices/{id}/corrections`) took 588 ms,
+with 6 Odoo calls (~290 ms) inside the decision: the 30 s master-data cache had expired,
+so the user's request paid for the refresh. Fix: refresh the cache in the background every
+15 s (`CachedMaster.start_background_refresh`); the staleness bound is unchanged.
+
+The next trace had no Odoo calls but still took 724 ms, 690 ms of it in the decision, and
+only 22 ms of that in SQL. cProfile: `build_ledger` replayed the billing of **every**
+earlier invoice, fuzzy-matching each line to its PO (`difflib`), 95% of the time, growing
+linearly with AP's history. Only the invoice's own PO matters for cumulative billing, so
+the replay is now scoped to it (duplicate detection still sees every invoice; that part
+is cheap).
+
+| | Before | After |
+|---|---|---|
+| Decisions that differ, all 340 invoices, full vs scoped replay | | **0** |
+| Mean time per decision (340 invoices, files master) | 454 ms | **25 ms** |
+| Correction request, end to end (trace) | 724 ms | **75 ms** |
+| Odoo calls inside a request | 6 when the cache expired | **0** |
+| `faktura-seed`, 340 invoices, Odoo master (same 165/62/58/55 outcome) | 177.8 s | **18.4 s** |
+
+Reproduce: `scripts/ledger_equivalence.py` re-decides every invoice in the demo database
+both ways; regression tests are `test_ledger_replays_billing_only_for_the_requested_po`
+and `test_cumulative_billing_still_counts_earlier_invoices_on_the_same_po`. A side
+effect: `faktura-seed` decides all 340 invoices much faster.
+
 ## 2026-11-19 · Learning from corrections
 
 `faktura-eval-learn --runs runs/luna-v2-reread-tiles-final runs/luna-v2-reread-pilot-tiles runs/luna-v2`

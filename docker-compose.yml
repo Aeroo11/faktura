@@ -3,6 +3,7 @@
 #   docker compose up -d db                 # Faktura's own Postgres
 #   docker compose --profile erp up -d      # plus Odoo 20 as the ERP (see docs/erp.md)
 #   docker compose --profile sso up -d      # plus Keycloak for sign-in (see docs/auth.md)
+#   docker compose --profile obs up -d      # Prometheus, Grafana, Jaeger (docs/observability.md)
 services:
   db:
     image: postgres:17.6-alpine
@@ -79,7 +80,53 @@ services:
       - keycloak-data:/opt/keycloak/data
     mem_limit: 1g
 
+  # Observability (docs/observability.md): Prometheus scrapes the API's metrics port on
+  # the host, Grafana shows the dashboard, Jaeger receives traces over OTLP.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: faktura-prometheus
+    profiles: [obs]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: faktura-grafana
+    profiles: [obs]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin-dev
+      GF_AUTH_ANONYMOUS_ENABLED: "true"  # read-only viewer, local only
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/faktura.json
+    ports:
+      - "127.0.0.1:3300:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    mem_limit: 512m
+
+  jaeger:
+    image: jaegertracing/jaeger:2.9.0
+    container_name: faktura-jaeger
+    profiles: [obs]
+    ports:
+      - "127.0.0.1:16686:16686"  # UI
+      - "127.0.0.1:4318:4318"  # OTLP over HTTP
+    mem_limit: 512m
+
 volumes:
+  prometheus-data:
   keycloak-data:
   faktura-pg:
   odoo-pg:

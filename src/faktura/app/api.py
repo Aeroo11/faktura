@@ -12,14 +12,22 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from faktura.app import audit, auth, service
-from faktura.app.db import AuditEvent, ErpOutbox, InvoiceRow, make_engine, make_sessionmaker
+from faktura.app import audit, auth, bank_changes, observability, service
+from faktura.app.db import (
+    AuditEvent,
+    BankChangeRow,
+    ErpOutbox,
+    InvoiceRow,
+    make_engine,
+    make_sessionmaker,
+)
 from faktura.extract.pdf import render_first_page_png
 from faktura.learn.misread import MisreadModel
 from faktura.master import CachedMaster, MasterData, MasterSource, StaticMaster
@@ -62,9 +70,16 @@ async def lifespan(app: FastAPI):
     if not hasattr(app.state, "auth"):
         app.state.auth = auth.auth_from_env()
     if not hasattr(app.state, "sessions"):
-        app.state.sessions = make_sessionmaker(make_engine())
+        engine = make_engine()
+        observability.trace_engine(engine)
+        app.state.sessions = make_sessionmaker(engine)
     if not hasattr(app.state, "ctx"):
         app.state.ctx = load_context(Path(os.environ.get("FAKTURA_DATA_DIR", DEFAULT_DATA_DIR)))
+        if isinstance(app.state.ctx.master, CachedMaster):
+            # Keep ERP latency off the request path (seen in traces: ~290 ms per refresh).
+            app.state.ctx.master.start_background_refresh()
+    observability.configure_logging()
+    observability.start_metrics_server(app.state.sessions)
     yield
 
 
@@ -89,7 +104,9 @@ def get_user(
     authn: auth.Authenticator = request.app.state.auth
     token = credentials.credentials if credentials else None
     try:
-        return authn.user(token, x_user, x_role)
+        user = authn.user(token, x_user, x_role)
+        request.state.user = user  # for the request log
+        return user
     except auth.Unauthenticated as e:
         raise HTTPException(401, str(e), headers={"WWW-Authenticate": "Bearer"}) from e
     except auth.NotPermitted as e:
@@ -104,6 +121,10 @@ UserDep = Annotated[service.User, Depends(get_user)]
 
 # Reads need an identity too: invoices carry bank accounts and amounts.
 app = FastAPI(title="Faktura review queue", lifespan=lifespan, dependencies=[Depends(get_user)])
+app.add_middleware(observability.RequestMetrics)
+# Middleware must be in place before the first request, so tracing is set up at import.
+load_dotenv()  # OTEL_EXPORTER_OTLP_ENDPOINT may come from .env; real variables win
+observability.init_tracing("faktura-api", app)
 
 
 def _run(session: Session, fn, *args, **kwargs) -> InvoiceRow:
@@ -114,7 +135,7 @@ def _run(session: Session, fn, *args, **kwargs) -> InvoiceRow:
         return row
     except service.NotFound as e:
         session.rollback()
-        raise HTTPException(404, f"invoice {e} not found") from e
+        raise HTTPException(404, f"{e} not found") from e
     except service.Forbidden as e:
         session.rollback()
         raise HTTPException(403, str(e)) from e
@@ -222,7 +243,21 @@ def get_invoice(invoice_id: str, session: SessionDep) -> dict[str, Any]:
             "attempts": outbox.attempts,
             "error": outbox.last_error,
         }
+    # The latest bank-change request for this vendor's account as printed on the invoice.
+    change = None
+    if row.vendor_id:
+        change = session.execute(
+            select(BankChangeRow)
+            .where(
+                BankChangeRow.vendor_id == row.vendor_id,
+                BankChangeRow.new_bank_account
+                == bank_changes.digits(row.reading.get("bank_account")),
+            )
+            .order_by(BankChangeRow.id.desc())
+            .limit(1)
+        ).scalar()
     return _view(row, detail=True) | {
+        "bank_change": bank_changes.view(change) if change else None,
         "erp": erp,
         "audit": [
             {
@@ -304,6 +339,140 @@ def post_reject(
 ) -> dict[str, Any]:
     row = _run(session, service.reject, user, invoice_id, body.reason, body.version)
     return _view(row, detail=True)
+
+
+# ------------------------------------------------------------------ bank changes
+
+
+class BankChangeRequest(BaseModel):
+    channel: str = Field(description="how the request arrived")
+    source_invoice_id: str | None = None
+    vendor_id: str | None = None
+    new_bank_name: str | None = None
+    new_bank_account: str | None = None
+
+
+class Callback(BaseModel):
+    spoke_with: str
+    outcome: str = Field(description="confirmed or denied")
+    note: str = ""
+    version: int | None = None
+
+
+class BankChangeDecision(BaseModel):
+    note: str = ""
+    version: int | None = None
+
+
+def _run_change(session: Session, fn, *args, **kwargs) -> dict[str, Any]:
+    return bank_changes.view(_run(session, fn, *args, **kwargs))
+
+
+def _change_detail(session: Session, ctx: service.Context, row: BankChangeRow) -> dict[str, Any]:
+    vendor = ctx.master.snapshot().vendors.get(row.vendor_id)
+    events = [
+        e
+        for e in session.execute(
+            select(AuditEvent)
+            .where(AuditEvent.action.like("bank_change%"))
+            .order_by(AuditEvent.seq)
+        ).scalars()
+        if e.payload.get("bank_change_id") == row.id
+    ]
+    paying = session.execute(
+        select(InvoiceRow).where(InvoiceRow.vendor_id == row.vendor_id).order_by(InvoiceRow.seq)
+    ).scalars()
+    return bank_changes.view(row) | {
+        "vendor": {
+            "name": vendor.name if vendor else None,
+            "phone_on_file": vendor.phone if vendor else None,
+        },
+        # Invoices that ask to be paid into the new account.
+        "invoices": [
+            _view(i)
+            for i in paying
+            if bank_changes.digits(i.reading.get("bank_account")) == row.new_bank_account
+        ],
+        "audit": [
+            {
+                "seq": e.seq,
+                "at": e.at,
+                "actor": e.actor,
+                "action": e.action,
+                "payload": e.payload,
+                "hash": e.hash,
+            }
+            for e in events
+        ],
+    }
+
+
+@app.get("/bank-changes")
+def list_bank_changes(session: SessionDep, status: str | None = None) -> dict[str, Any]:
+    stmt = select(BankChangeRow).order_by(BankChangeRow.id.desc())
+    if status:
+        stmt = stmt.where(BankChangeRow.status == status)
+    return {"items": [bank_changes.view(r) for r in session.execute(stmt).scalars()]}
+
+
+@app.get("/bank-changes/{change_id}")
+def get_bank_change(change_id: int, session: SessionDep, ctx: CtxDep) -> dict[str, Any]:
+    row = session.get(BankChangeRow, change_id)
+    if row is None:
+        raise HTTPException(404, f"bank change {change_id} not found")
+    return _change_detail(session, ctx, row)
+
+
+@app.post("/bank-changes")
+def post_bank_change(
+    body: BankChangeRequest, session: SessionDep, ctx: CtxDep, user: UserDep
+) -> dict[str, Any]:
+    return _run_change(
+        session,
+        bank_changes.request_change,
+        ctx,
+        user,
+        body.channel,
+        source_invoice_id=body.source_invoice_id,
+        vendor_id=body.vendor_id,
+        new_bank_name=body.new_bank_name,
+        new_bank_account=body.new_bank_account,
+    )
+
+
+@app.post("/bank-changes/{change_id}/callback")
+def post_bank_change_callback(
+    change_id: int, body: Callback, session: SessionDep, ctx: CtxDep, user: UserDep
+) -> dict[str, Any]:
+    return _run_change(
+        session,
+        bank_changes.record_callback,
+        ctx,
+        user,
+        change_id,
+        body.spoke_with,
+        body.outcome,
+        body.note,
+        body.version,
+    )
+
+
+@app.post("/bank-changes/{change_id}/approve")
+def post_bank_change_approve(
+    change_id: int, body: BankChangeDecision, session: SessionDep, ctx: CtxDep, user: UserDep
+) -> dict[str, Any]:
+    return _run_change(
+        session, bank_changes.decide, ctx, user, change_id, True, body.note, body.version
+    )
+
+
+@app.post("/bank-changes/{change_id}/reject")
+def post_bank_change_reject(
+    change_id: int, body: BankChangeDecision, session: SessionDep, ctx: CtxDep, user: UserDep
+) -> dict[str, Any]:
+    return _run_change(
+        session, bank_changes.decide, ctx, user, change_id, False, body.note, body.version
+    )
 
 
 @app.get("/summary")

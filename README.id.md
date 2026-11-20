@@ -1,5 +1,6 @@
 # Faktura
 
+[![CI](https://github.com/Aeroo11/faktura/actions/workflows/ci.yml/badge.svg)](https://github.com/Aeroo11/faktura/actions/workflows/ci.yml)
 [English](README.md)
 
 Otomasi Accounts Payable: membaca faktur, mencocokkannya dengan PO dan bukti terima barang
@@ -9,8 +10,9 @@ Otomasi Accounts Payable: membaca faktur, mencocokkannya dengan PO dan bukti ter
 > baca ulang terarah, validator deterministik, mesin pencocokan dengan eval end-to-end,
 > benchmark CORD, API antrean review dengan maker-checker dan audit trail tahan
 > manipulasi, serta UI. Fase 2 berjalan: data master dibaca langsung dari ERP (Odoo 20),
-> dan faktur yang disetujui diposting balik sebagai vendor bill, serta login lewat
-> Keycloak. Belum ada: deployment.
+> dan faktur yang disetujui diposting balik sebagai vendor bill, login lewat Keycloak,
+> belajar dari koreksi, serta alur verifikasi perubahan rekening vendor. Belum ada:
+> deployment.
 > README ini hanya menjelaskan yang sudah ada di kode.
 
 ## Dataset sintetis
@@ -20,6 +22,13 @@ uv sync
 uv run faktura-synth --config configs/synth.yaml --out data/synth/v1
 uv run pytest
 ```
+
+**CI** (GitHub Actions) berjalan di setiap push dan pull request. Isinya ruff, seluruh
+test, termasuk kecocokan migrasi dengan model, trigger append-only di audit trail, dan
+alur perubahan rekening di Postgres sungguhan, lalu typecheck, lint, test, dan build untuk
+web. Terakhir ada gate rilis: dengan pembacaan sempurna atas ke-340 faktur v2, mesin
+pencocokan harus menahan setiap anomali dan merutekan setiap faktur sesuai labelnya
+(`faktura-eval-match --oracle --check`). Tidak ada panggilan model dan tidak perlu secret.
 
 Generator membuat vendor, PO, bukti terima barang, dan faktur PDF. Faktur PDF dibuat dengan
 variasi bahasa (ID/EN), format tanggal, format NPWP, dan efek hasil scan. Sebagian faktur
@@ -116,7 +125,8 @@ di UI:
   pencocokan memutuskan ulang. Faktur yang pernah disentuh manusia harus disetujui
   approver lain. Orang yang mengubah faktur tidak bisa menyetujuinya.
 - **`fraud_hold`** hanya bisa diajukan setelah verifikasi vendor dicatat (siapa yang
-  dihubungi, lewat kanal apa, dan apa yang dikonfirmasi).
+  dihubungi, lewat kanal apa, dan apa yang dikonfirmasi). Rekening bank baru tidak pernah
+  diterima di faktur: harus lewat permintaan perubahan rekening (lihat di bawah).
 - **Hasil baca asli model tidak pernah ditimpa.** Koreksi manusia disimpan terpisah.
 - **Audit trail tahan manipulasi.** Setiap event menyimpan hash event sebelumnya, sehingga
   `GET /audit/verify` mendeteksi baris yang diubah atau dihapus. Di Postgres, trigger
@@ -188,6 +198,56 @@ ke-25 perubahan NPWP/rekening asli tetap ditahan, dan 235 pemalsuan satu digit t
 semua setelah pengecekan halaman. Memasukkan pola yang sama ke prompt re-read justru
 **menurunkan** akurasi (73,0% → 66,9% pada data held-out), jadi tidak diadopsi. Detail:
 [`docs/learning.md`](docs/learning.md).
+
+## Perubahan rekening vendor
+
+Modus pencurian AP yang paling umum adalah meminta tim AP membayar faktur asli ke
+rekening lain, lewat email "dari vendor", surat berkop palsu, atau faktur yang
+mencantumkan rekening baru. Dari dokumennya, perubahan palsu dan asli tidak bisa
+dibedakan. Karena itu Faktura tidak pernah menerima rekening baru dari faktur. Faktur
+seperti itu ditahan, tidak bisa di-submit, dan hanya bisa dilepas lewat **permintaan
+perubahan rekening** yang melibatkan tiga orang berbeda:
+
+1. **Staf AP (Budi)** mencocokkan rekening dengan halaman, lalu mencatat permintaannya.
+2. **Staf AP lain (Dewi)** menelepon vendor ke **nomor yang sudah tercatat di master**.
+   Nomor itu ditampilkan dan direkam oleh sistem, jadi nomor dari faktur atau email tidak
+   bisa dipakai. Kalau vendor menyangkal, permintaan dan semua faktur yang minta dibayar
+   ke rekening itu ditolak.
+3. **Approver yang tidak terlibat (Sari)** menyetujui. Rekening baru langsung menggantikan
+   yang lama di data master, faktur terbuka diputuskan ulang, dan pembayarannya tetap
+   harus disetujui approver lain (Rina). Dengan Odoo, `faktura-erp-sync` menandai
+   rekening baru sebagai trusted dan mencabut status trusted rekening lama.
+
+![Telepon balik ke nomor yang tercatat](docs/screenshots/8-callback-number-on-file.png)
+
+```bash
+uv run python scripts/e2e_bank_change.py --out docs/screenshots --erp
+```
+
+Detail, demo, dan trade-off hak akses di Odoo: [`docs/bank-changes.md`](docs/bank-changes.md).
+
+## Observability
+
+Metrik Prometheus, dashboard Grafana dengan aturan alert, log request berformat JSON
+dengan request id, dan trace OpenTelemetry (API, SQL, panggilan ke Odoo, dan setiap
+keputusan pencocokan). Selain latensi dan error, metriknya memantau pekerjaannya sendiri:
+jumlah faktur dan rupiah yang ditahan, antrean posting ke ERP, perubahan rekening yang
+menunggu, dan apakah hash chain audit trail masih utuh.
+
+![Dashboard Grafana](docs/screenshots/obs-1-grafana.png)
+
+Trace pertama langsung menemukan masalah: satu koreksi field butuh 724 ms. Hampir semuanya
+habis untuk memutar ulang tagihan dari seluruh riwayat AP hanya demi mengecek satu PO,
+ditambah refresh data master dari ERP di jalur request saat cache kedaluwarsa. Keduanya
+diperbaiki: **724 → 75 ms**, dengan keputusan yang identik untuk ke-340 faktur.
+
+```bash
+docker compose --profile obs up -d     # Prometheus :9090, Grafana :3300, Jaeger :16686
+FAKTURA_METRICS_PORT=9077 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+    uv run uvicorn faktura.app.api:app --port 8077
+```
+
+Detail: [`docs/observability.md`](docs/observability.md).
 
 ## Integrasi ERP (Odoo 20)
 

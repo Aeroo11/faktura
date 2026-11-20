@@ -65,6 +65,49 @@ export interface InvoiceDetail extends InvoiceSummary {
   makers: string[];
   /** Posting to the ERP; null until the invoice is approved. */
   erp: ErpStatus | null;
+  /** Latest bank-change request for the account printed on this invoice, if any. */
+  bank_change: BankChange | null;
+  audit: AuditEntry[];
+}
+
+export type BankChangeStatus = "awaiting_callback" | "awaiting_approval" | "approved" | "rejected";
+
+export interface BankAccount {
+  bank_name: string;
+  bank_account: string;
+}
+
+export interface Callback {
+  called_by: string;
+  phone: string;
+  spoke_with: string;
+  outcome: "confirmed" | "denied";
+  note: string;
+  at: string;
+}
+
+export interface BankChange {
+  id: number;
+  vendor_id: string;
+  status: BankChangeStatus;
+  old: BankAccount;
+  new: BankAccount;
+  source_invoice_id: string | null;
+  channel: string;
+  requested_by: string;
+  callback: Callback | null;
+  decided_by: string | null;
+  decision_note: string | null;
+  erp_status: "pending" | "synced" | "needs_attention" | null;
+  erp_error: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export interface BankChangeDetail extends BankChange {
+  vendor: { name: string | null; phone_on_file: string | null };
+  invoices: InvoiceSummary[];
   audit: AuditEntry[];
 }
 

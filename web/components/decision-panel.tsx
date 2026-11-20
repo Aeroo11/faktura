@@ -1,8 +1,9 @@
 "use client";
 
-import { approveInvoice, rejectInvoice, submitInvoice } from "@/app/actions";
+import Link from "next/link";
+import { approveInvoice, rejectInvoice, requestBankChange, submitInvoice } from "@/app/actions";
 import { Button, FormMessage, Hidden, inputClass, useAction } from "@/components/action-form";
-import { formatTimestamp } from "@/lib/format";
+import { BANK_CHANGE_STATUS_LABEL, formatTimestamp } from "@/lib/format";
 import type { InvoiceDetail } from "@/lib/types";
 import type { SessionUser } from "@/lib/session";
 
@@ -50,6 +51,62 @@ function Submit({ inv }: { inv: InvoiceDetail }) {
   );
 }
 
+const BANK_REASONS = ["bank_master", "bank_name_master"];
+
+/**
+ * A changed payee account is never accepted on the invoice: it goes through a
+ * bank-change request (call-back to the number on file, then a third person approves).
+ */
+function BankChangeStep({ inv, user }: { inv: InvoiceDetail; user: SessionUser }) {
+  const [state, act, pending] = useAction(requestBankChange);
+  const change = inv.bank_change;
+  if (change) {
+    return (
+      <p className="rounded-control bg-danger-soft/60 px-3 py-2 text-sm text-danger">
+        Payment held for a changed bank account. Bank-change request{" "}
+        <Link href={`/bank-changes/${change.id}`} className="font-medium underline">
+          #{change.id}
+        </Link>{" "}
+        is <span className="font-medium">{BANK_CHANGE_STATUS_LABEL[change.status]}</span>.
+      </p>
+    );
+  }
+  if (user.role !== "ap_staff") {
+    return <p className="text-sm text-text-muted">Held for a changed bank account. Waiting for AP staff.</p>;
+  }
+  const fields = inv.reasons.filter((r) => BANK_REASONS.includes(r.code)).flatMap((r) => r.fields ?? []);
+  const unchecked = fields.filter((f) => !inv.human_verified.includes(f));
+  if (unchecked.length > 0) {
+    return (
+      <p className="rounded-control bg-warning-soft px-3 py-2 text-sm text-warning">
+        The bank details differ from the vendor master. Check {unchecked.join(" and ").replaceAll("_", " ")} against
+        the page first: correct a misread, or mark the reading as correct. A real change is then verified with the
+        vendor in a bank-change request, never on this invoice.
+      </p>
+    );
+  }
+  return (
+    <form action={act} className="space-y-2 rounded-control border border-danger/30 bg-danger-soft/40 p-3">
+      <Hidden values={{ invoice_id: inv.id }} />
+      <p className="text-sm font-medium text-danger">This invoice asks to be paid into a new bank account.</p>
+      <p className="text-xs text-text-muted">
+        That is how most payment fraud works. Record a bank-change request: a colleague calls the vendor back on the
+        number already on file, and an approver who was not involved decides.
+      </p>
+      <input
+        name="channel"
+        required
+        minLength={5}
+        placeholder="How did the change arrive? e.g. printed on the invoice, with a cover letter"
+        className={inputClass}
+      />
+      <Button tone="danger" pending={pending}>
+        Open bank-change request
+      </Button>
+      <FormMessage state={state} />
+    </form>
+  );
+}
 function Approve({ inv }: { inv: InvoiceDetail }) {
   const [state, act, pending] = useAction(approveInvoice);
   return (
@@ -123,6 +180,7 @@ export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: Session
   const isMaker = inv.makers.includes(user.name);
   // A likely misread of the NPWP or bank account must be checked before anyone submits it.
   const mustCheck = inv.reasons.some((r) => r.code === "probable_misread");
+  const bankHeld = inv.reasons.some((r) => BANK_REASONS.includes(r.code));
 
   if (!open) {
     return (
@@ -146,8 +204,9 @@ export function DecisionPanel({ inv, user }: { inv: InvoiceDetail; user: Session
           correct. A confirmed difference from the vendor master is held for vendor verification.
         </p>
       )}
-      {inv.state === "needs_action" && user.role === "ap_staff" && !mustCheck && <Submit inv={inv} />}
-      {inv.state === "needs_action" && user.role === "approver" && (
+      {inv.state === "needs_action" && bankHeld && !mustCheck && <BankChangeStep inv={inv} user={user} />}
+      {inv.state === "needs_action" && user.role === "ap_staff" && !mustCheck && !bankHeld && <Submit inv={inv} />}
+      {inv.state === "needs_action" && user.role === "approver" && !bankHeld && (
         <p className="text-sm text-text-muted">Waiting for AP staff to check this invoice.</p>
       )}
       {inv.state === "awaiting_approval" && user.role === "approver" && !isMaker && <Approve inv={inv} />}

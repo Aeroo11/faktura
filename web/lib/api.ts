@@ -3,7 +3,14 @@ import "server-only";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { SESSION_COOKIE, type Session, type SessionUser, unseal } from "./session";
-import type { ChainStatus, InvoiceDetail, InvoiceSummary, SummaryGroup } from "./types";
+import type {
+  BankChange,
+  BankChangeDetail,
+  ChainStatus,
+  InvoiceDetail,
+  InvoiceSummary,
+  SummaryGroup,
+} from "./types";
 
 /** The browser never talks to FastAPI; every call goes through the Next server. */
 export const API_URL = process.env.FAKTURA_API_URL ?? "http://127.0.0.1:8077";
@@ -77,4 +84,16 @@ export function postAction(id: string, action: string, body: unknown) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function listBankChanges(status?: string) {
+  return request<{ items: BankChange[] }>(`/bank-changes${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+}
+
+export const getBankChange = (id: number) => request<BankChangeDetail>(`/bank-changes/${id}`);
+
+/** `action` is "" to create a request, or callback / approve / reject on request `id`. */
+export function postBankChange(id: number | null, action: string, body: unknown) {
+  const path = id == null ? "/bank-changes" : `/bank-changes/${id}/${action}`;
+  return request<BankChange>(path, { method: "POST", body: JSON.stringify(body) });
 }

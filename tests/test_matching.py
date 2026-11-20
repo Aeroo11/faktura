@@ -44,6 +44,26 @@ def _first_clean(data_dir):
     return next(lb for lb in load_labels(data_dir) if not lb.anomalies)
 
 
+def test_release_gate_flags_a_paid_anomaly():
+    from faktura.evals.matching_eval import check
+
+    def rep(held=1.0, routed=1.0, wrong=()):
+        return {
+            "per_kind": {
+                "clean": {"not_auto_approved": 0.0, "routed_as_expected": 1.0},
+                "price_mismatch": {"not_auto_approved": held, "routed_as_expected": routed},
+            },
+            "money": {"at_risk": 10, "caught": 10 if held == 1.0 else 5},
+            "wrong_payments": list(wrong),
+        }
+
+    assert check(rep(), exact_routing=True) == []
+    assert len(check(rep(held=0.5), exact_routing=False)) == 2  # paid, and money missed
+    assert check(rep(routed=0.9), exact_routing=False) == []  # model readings may misroute
+    assert check(rep(routed=0.9), exact_routing=True) != []
+    assert check(rep(wrong=[{"invoice_id": "x"}]), exact_routing=False) != []
+
+
 def test_misread_bank_account_is_held_not_paid(data_dir):
     md = MasterData.load(data_dir)
     lb = _first_clean(data_dir)

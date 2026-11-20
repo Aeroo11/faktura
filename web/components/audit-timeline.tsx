@@ -12,6 +12,15 @@ const ACTION_LABEL: Record<string, string> = {
   submitted: "Submitted for approval",
   approved: "Approved",
   rejected: "Rejected",
+  erp_queued: "Queued for the ERP",
+  erp_bill_posted: "Posted to the ERP",
+  erp_needs_attention: "ERP needs attention",
+  bank_change_requested: "Bank-change request recorded",
+  bank_change_callback: "Vendor called back",
+  bank_change_approved: "Bank change approved",
+  bank_change_rejected: "Bank change rejected",
+  bank_change_synced: "Bank account trusted in the ERP",
+  bank_change_needs_attention: "Bank change: ERP needs attention",
 };
 
 function describe(e: AuditEntry): string {
@@ -30,6 +39,20 @@ function describe(e: AuditEntry): string {
     case "approved":
     case "rejected":
       return String(p.note ?? p.reason ?? "");
+    case "bank_change_requested": {
+      const n = p.new as { bank_name?: string; bank_account?: string } | undefined;
+      return `#${p.bank_change_id}: ${n?.bank_name ?? ""} ${n?.bank_account ?? ""} (${p.channel})`;
+    }
+    case "bank_change_callback":
+      return `#${p.bank_change_id}: ${p.outcome} by ${p.spoke_with}, called ${p.phone} (number on file)`;
+    case "bank_change_approved":
+    case "bank_change_rejected":
+      return `#${p.bank_change_id}${p.note ? `: ${p.note}` : ""}`;
+    case "bank_change_needs_attention":
+    case "erp_needs_attention":
+      return String(p.error ?? "");
+    case "erp_bill_posted":
+      return String(p.name ?? "");
     default:
       return "";
   }

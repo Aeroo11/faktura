@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -87,3 +88,29 @@ class CachedMaster:
                 self._md = self._fetch()
                 self._at = now
             return self._md
+
+    def refresh(self) -> None:
+        """Fetch now, outside any request. The lock is held only to swap the result."""
+        md = self._fetch()
+        with self._lock:
+            self._md, self._at = md, self._clock()
+
+    def start_background_refresh(self) -> threading.Thread:
+        """Refresh every ttl/2 so requests find a fresh copy instead of waiting on the ERP.
+
+        The bound on staleness is unchanged: if refreshes fail, the copy ages past the
+        TTL and the next request fetches (and fails) itself.
+        """
+
+        def loop() -> None:
+            log = logging.getLogger("faktura.master")
+            while True:
+                time.sleep(self._ttl / 2)
+                try:
+                    self.refresh()
+                except Exception:
+                    log.exception("background refresh of %s master data failed", self.name)
+
+        t = threading.Thread(target=loop, name=f"{self.name}-master-refresh", daemon=True)
+        t.start()
+        return t

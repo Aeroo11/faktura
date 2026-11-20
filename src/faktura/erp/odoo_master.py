@@ -4,6 +4,7 @@ Field mapping (Odoo 20, see docs/erp.md):
 
     Vendor.vendor_id     res.partner.ref
     Vendor.npwp          res.partner.vat
+    Vendor.phone         res.partner.phone (number on file for call-backs)
     Vendor.bank_*        res.partner.bank (trusted only: allow_out_payment)
     PurchaseOrder        purchase.order (confirmed) + purchase.order.line
     POLine.sku           product.product.default_code
@@ -46,7 +47,7 @@ def fetch_vendors(client: OdooClient) -> tuple[dict[str, Vendor], dict[int, str]
     partners = client.search_read(
         "res.partner",
         [("ref", "!=", False), ("supplier_rank", ">", 0)],
-        ["ref", "name", "vat", "street"],
+        ["ref", "name", "vat", "street", "phone"],
     )
     banks = client.search_read(
         "res.partner.bank",
@@ -65,6 +66,7 @@ def fetch_vendors(client: OdooClient) -> tuple[dict[str, Vendor], dict[int, str]
             name=p["name"],
             npwp=p["vat"] or "",
             address=p["street"] or "",
+            phone=p.get("phone") or "",
             bank_name=bank.get("bank_name") or "",
             # No trusted account: nothing on an invoice can match, so payment is held.
             bank_account=bank.get("account_number") or "",

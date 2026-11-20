@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (lint, tests, Postgres, release gate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_USER: faktura
+          POSTGRES_PASSWORD: faktura-ci
+          POSTGRES_DB: faktura_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U faktura -d faktura_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      # Migrations, the append-only audit trigger and the workflow on a real Postgres.
+      FAKTURA_TEST_DATABASE_URL: postgresql+psycopg://faktura:faktura-ci@127.0.0.1:5432/faktura_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Lint
+        run: |
+          uvx ruff check
+          uvx ruff format --check
+      - name: Tests
+        run: uv run pytest
+      - name: Release gate (matching engine, perfect readings, all 340 v2 invoices)
+        # Fails if any anomaly would be paid, money at risk slips through, or any invoice
+        # is routed differently from its label. No model calls, no API keys.
+        run: |
+          uv run faktura-synth --config configs/synth_v2.yaml --out data/synth/v2 --no-render
+          uv run faktura-eval-match --data data/synth/v2 --oracle --check
+
+  web:
+    name: Web (typecheck, lint, tests, build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run verify
+      - run: npm run build

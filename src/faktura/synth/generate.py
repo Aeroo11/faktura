@@ -185,9 +185,22 @@ def _pick_anomaly(rng: random.Random, cfg: SynthConfig) -> AnomalyType | None:
     return rng.choices(kinds, weights=[cfg.anomaly_weights[k] for k in kinds])[0]
 
 
+def vendor_phone(seed: int, vendor_id: str) -> str:
+    """Office phone on file, used for call-backs.
+
+    Drawn from its own generator, so adding phones changed no other generated value.
+    """
+    rng = random.Random(f"{seed}:{vendor_id}:phone")
+    area = rng.choice(["21", "22", "24", "31", "61", "274"])
+    return f"+62 {area} {rng.randint(1000, 9999)} {rng.randint(1000, 9999)}"
+
+
 def generate(cfg: SynthConfig) -> Dataset:
     rng = random.Random(cfg.seed)
-    vendors = make_vendors(rng, cfg.n_vendors)
+    vendors = [
+        v.model_copy(update={"phone": vendor_phone(cfg.seed, v.vendor_id)})
+        for v in make_vendors(rng, cfg.n_vendors)
+    ]
     by_id = {v.vendor_id: v for v in vendors}
     vendor_seq = dict.fromkeys(by_id, 0)
 

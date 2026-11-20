@@ -26,6 +26,14 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               Faktura
               <span className="hidden text-sm font-normal text-text-muted sm:inline">AP review queue</span>
             </Link>
+            <nav className="mr-auto flex gap-4 text-sm text-text-muted" aria-label="Main">
+              <Link href="/" className="hover:text-text">
+                Queue
+              </Link>
+              <Link href="/bank-changes" className="hover:text-text">
+                Bank changes
+              </Link>
+            </nav>
             <UserMenu />
           </div>
         </header>

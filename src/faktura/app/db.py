@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, ForeignKey, String, create_engine
+from sqlalchemy import JSON, BigInteger, ForeignKey, Index, String, create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -35,9 +35,11 @@ class Base(DeclarativeBase):
 
 class InvoiceRow(Base):
     __tablename__ = "invoices"
+    # As in migration 0001: a unique constraint plus a plain index on seq.
+    __table_args__ = (Index("ix_invoices_seq", "seq"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    seq: Mapped[int] = mapped_column(unique=True, index=True)  # arrival order
+    seq: Mapped[int] = mapped_column(unique=True)  # arrival order
     pdf_path: Mapped[str] = mapped_column(String(512))
     state: Mapped[str] = mapped_column(String(32), index=True)
     decision: Mapped[str] = mapped_column(String(32), index=True)
@@ -47,7 +49,7 @@ class InvoiceRow(Base):
     human_verified: Mapped[list[Any]]  # fields a person confirmed or corrected
     makers: Mapped[list[Any]]  # users who changed or submitted this invoice
     vendor_id: Mapped[str | None] = mapped_column(String(32), index=True)
-    total: Mapped[int | None]
+    total: Mapped[int | None] = mapped_column(BigInteger)  # rupiah; can exceed 2^31
     auto_approved: Mapped[bool] = mapped_column(default=False)
     version: Mapped[int] = mapped_column(default=1)  # optimistic concurrency
 
@@ -93,6 +95,45 @@ class ErpOutbox(Base):
     erp_name: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[str] = mapped_column(String(40))
     updated_at: Mapped[str] = mapped_column(String(40))
+
+
+class BankChangeStatus(StrEnum):
+    AWAITING_CALLBACK = "awaiting_callback"  # someone must call the number on file
+    AWAITING_APPROVAL = "awaiting_approval"  # vendor confirmed; a third person decides
+    APPROVED = "approved"  # the new account is the vendor's account from now on
+    REJECTED = "rejected"  # denied by the vendor on the call-back, or by the approver
+
+
+class BankChangeRow(Base):
+    """A request to change a vendor's bank account, verified outside the request itself.
+
+    Three different people: whoever records the request, whoever calls the vendor back on
+    the number already on file, and an approver. Invoices are never the place where a
+    payee change is accepted.
+    """
+
+    __tablename__ = "bank_changes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    vendor_id: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    old_bank_name: Mapped[str] = mapped_column(String(128))  # master at request time
+    old_bank_account: Mapped[str] = mapped_column(String(64))
+    new_bank_name: Mapped[str] = mapped_column(String(128))
+    new_bank_account: Mapped[str] = mapped_column(String(64))
+    source_invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"))
+    channel: Mapped[str] = mapped_column(String(500))  # how the request arrived
+    requested_by: Mapped[str] = mapped_column(String(64))
+    callback: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # who, number, outcome
+    decided_by: Mapped[str | None] = mapped_column(String(64))
+    decision_note: Mapped[str | None] = mapped_column(String(2000))
+    # Writing the verified account to the ERP (Odoo mode only): None, pending, synced,
+    # needs_attention.
+    erp_status: Mapped[str | None] = mapped_column(String(32), index=True)
+    erp_error: Mapped[str | None] = mapped_column(String(2000))
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(default=1)
 
 
 class AuditHead(Base):

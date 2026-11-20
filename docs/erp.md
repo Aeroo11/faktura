@@ -52,8 +52,10 @@ was lost may already have been committed.
 
 ## Access: a dedicated integration user
 
-Faktura authenticates as `faktura-bot`, not as an admin, with only Purchase user,
-Inventory user, and Billing rights. Its API key expires after 90 days (Odoo's limit for
+Faktura authenticates as `faktura-bot`, not as an admin, with Purchase user, Inventory
+user, and Billing rights, plus "Validate bank account" and "Contact creation" so it can
+write a bank-account change that Faktura's workflow has verified
+([`bank-changes.md`](bank-changes.md), including the trade-off). Its API key expires after 90 days (Odoo's limit for
 keys a user creates); rerun `odoo_setup.py` to rotate it.
 
 Master data is loaded by `odoo_seed.py` as an admin inside `odoo shell`, the way
@@ -85,7 +87,9 @@ system user (OdooBot) or scheduled jobs do it, and a trusted account's number ca
 longer be edited. Faktura treats only trusted accounts as master data. So when someone
 adds a new account to a vendor in Odoo, invoices paying into it are held as
 `fraud_hold` until a person with that right verifies it, and a vendor with no trusted
-account cannot be paid automatically at all.
+account cannot be paid automatically at all. A change verified in Faktura (call-back to
+the number on file, approval by a third person) is written back by `faktura-erp-sync`:
+the new account is trusted and the old one is not.
 
 Master data is cached for 30 seconds, so a change in Odoo reaches decisions within that
 time. If Odoo cannot be reached, decisions fail rather than use data of unknown age.

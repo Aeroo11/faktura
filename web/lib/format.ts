@@ -1,4 +1,4 @@
-import type { Decision, State } from "./types";
+import type { BankChangeStatus, Decision, State } from "./types";
 
 const IDR = new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 });
 
@@ -33,6 +33,18 @@ export const STATE_LABEL: Record<State, string> = {
   approved: "Approved",
   rejected: "Rejected",
 };
+
+export const BANK_CHANGE_STATUS_LABEL: Record<BankChangeStatus, string> = {
+  awaiting_callback: "Awaiting call-back",
+  awaiting_approval: "Awaiting approval",
+  approved: "Approved",
+  rejected: "Rejected",
+};
+
+/** Bank account numbers in groups of four, easier to compare digit by digit. */
+export function groupDigits(s: string): string {
+  return s.replace(/(\d{4})(?=\d)/g, "$1 ");
+}
 
 /** Human wording for reason codes from the matching engine and validators. */
 export const REASON_LABEL: Record<string, string> = {

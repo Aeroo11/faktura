@@ -8,6 +8,7 @@ __pycache__/
 !.env.example
 data/synth/
 data/real/
+data/*.db
 runs/
 models/
 web/node_modules/
